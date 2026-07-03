@@ -28,11 +28,11 @@ If the target artifact, decision, or question is unclear, ask one concise clarif
 
 ## Required Tooling
 
-Before dispatching workers, read `skills/using-superpowers/references/codex-tools.md` if the active worker tool names are not already obvious. Use the callable names in the active tools list for spawn, wait, and close. Record those callable names in `state.json`.
+Before dispatching workers, inspect the active tools list and identify the callable names for spawn, wait, and close. Use those exact callable names and record them in `state.json`.
 
 Do not hardcode one namespace. In some sessions the callable names may be bare; in others they may be namespaced. The runtime tools list is the authority.
 
-If no worker-capable multi-agent tools are available, stop and report the blocker. Do not simulate six subagents, do not invent worker results, and do not silently downgrade this skill to single-agent analysis.
+🔴 CHECKPOINT · STOP: If no worker-capable multi-agent tools are available, stop and report the blocker. Do not simulate six subagents, do not invent worker results, and do not silently downgrade this skill to single-agent analysis.
 
 Required `state.json.tooling` shape:
 
@@ -55,10 +55,10 @@ Every run must create a local record before the first dispatch:
 - Required files at initialization: `brief.md`, `ledger.md`, `state.json`
 - Required round files: `round-N.json` and `round-N.md` where `N` is the round number rendered by the helper as `round-01.json`, `round-01.md`, and so on.
 
-Use the helper when available:
+Resolve helper paths relative to this `SKILL.md` file. Use the bundled helper when available:
 
 ```bash
-skills/orchestrating-multi-agent-analysis/scripts/run-ledger init \
+scripts/run-ledger init \
   --root .superpowers/multi-agent-analysis \
   --mode review \
   --target docs/plan.md \
@@ -128,10 +128,20 @@ If you cannot explain why S6 is materially different from S1-S5 in one sentence,
 Create the assignment file yourself, then validate it with the helper:
 
 ```bash
-skills/orchestrating-multi-agent-analysis/scripts/run-ledger prepare-round \
+scripts/run-ledger prepare-round \
   --run-dir .superpowers/multi-agent-analysis/2026-07-03-1200-review-plan \
   --round 1 \
   --assignments /tmp/round-01-assignments.json
+```
+
+For Round 3 or Round 4, ask the user first. After explicit approval, include `--user-approved`:
+
+```bash
+scripts/run-ledger prepare-round \
+  --run-dir .superpowers/multi-agent-analysis/<run-id> \
+  --round 3 \
+  --assignments /tmp/round-03-assignments.json \
+  --user-approved
 ```
 
 The assignment file must be a JSON array with exactly six objects. Each object must include `slot`, `lens`, and `question`. Use `round-subagent-prompt.md` as the prompt template for each worker.
@@ -154,21 +164,21 @@ For each round:
 Use the helper commands for live bookkeeping:
 
 ```bash
-skills/orchestrating-multi-agent-analysis/scripts/run-ledger record-spawn \
+scripts/run-ledger record-spawn \
   --run-dir .superpowers/multi-agent-analysis/<run-id> \
   --round 1 \
   --slot A1 \
   --agent-id <agent-id> \
   --status spawned
 
-skills/orchestrating-multi-agent-analysis/scripts/run-ledger record-result \
+scripts/run-ledger record-result \
   --run-dir .superpowers/multi-agent-analysis/<run-id> \
   --round 1 \
   --slot A1 \
   --status completed \
   --summary "Short factual result summary"
 
-skills/orchestrating-multi-agent-analysis/scripts/run-ledger record-close \
+scripts/run-ledger record-close \
   --run-dir .superpowers/multi-agent-analysis/<run-id> \
   --round 1 \
   --slot A1 \
@@ -182,7 +192,7 @@ If a spawn, wait, or close call fails, write the failure into `ledger.md` and de
 When resuming an interrupted run, start with:
 
 ```bash
-skills/orchestrating-multi-agent-analysis/scripts/run-ledger status \
+scripts/run-ledger status \
   --run-dir .superpowers/multi-agent-analysis/<run-id>
 ```
 
@@ -207,7 +217,7 @@ Do not average away disagreement. Preserve conflicts and name the evidence that 
 After the synthesis is written, mark the round decision:
 
 ```bash
-skills/orchestrating-multi-agent-analysis/scripts/run-ledger finalize-round \
+scripts/run-ledger finalize-round \
   --run-dir .superpowers/multi-agent-analysis/<run-id> \
   --round 1 \
   --decision stop \
@@ -216,13 +226,24 @@ skills/orchestrating-multi-agent-analysis/scripts/run-ledger finalize-round \
 
 Use `--decision continue_round_2` only when the continuation gate is satisfied. Use `--decision ask_user` when user approval is required before the next dispatch.
 
+If a worker lifecycle is blocked and cannot produce six result+close records, document the blocker and finalize the incomplete round with `--blocked`. Blocked rounds must stop:
+
+```bash
+scripts/run-ledger finalize-round \
+  --run-dir .superpowers/multi-agent-analysis/<run-id> \
+  --round 1 \
+  --decision stop \
+  --summary "Worker dispatch failed; user input is required before restarting analysis." \
+  --blocked
+```
+
 ## Continuation Gate
 
 Round 1 runs when the skill is triggered and prerequisites are satisfied.
 
 Round 2 runs automatically only when there is a decision-critical disagreement or a high-value missing perspective or evidence gap.
 
-Round 3 and later require user approval before dispatch. Round 4 is the absolute cap and also requires user approval.
+🔴 CHECKPOINT · USER APPROVAL REQUIRED: Round 3 and later require user approval before dispatch. Round 4 is the absolute cap and also requires user approval.
 
 Continue only when all of these are true:
 
@@ -250,6 +271,17 @@ After a round, report:
 - Whether the run stopped or why another round is justified.
 
 For Chinese user requests, answer in Chinese unless the user asks otherwise.
+
+## Hard Blacklist
+
+Never do these:
+
+- Do not trigger this skill for ordinary review, planning, debugging, brainstorming, or PR review without explicit multi-agent wording.
+- Do not run fewer than six workers while claiming this skill was used.
+- Do not synthesize or finalize a round before all spawned workers have result and close records, unless the round is explicitly finalized with a documented blocked path.
+- Do not record a worker result or close status before its spawn is recorded in `round-N.json`.
+- Do not continue to Round 3 or Round 4 without user approval.
+- Do not replace a failed worker silently; report the blocked lifecycle and ask before restarting the round.
 
 ## Common Mistakes
 

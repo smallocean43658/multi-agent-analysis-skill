@@ -133,6 +133,15 @@ PY
   --agent-id agent-a1 \
   --status spawned >/dev/null
 
+if "$LEDGER" record-close \
+  --run-dir "$run_dir" \
+  --round 1 \
+  --slot A1 \
+  --status closed >/dev/null 2>&1; then
+  echo "record-close should reject slots without a result record" >&2
+  exit 1
+fi
+
 "$LEDGER" record-result \
   --run-dir "$run_dir" \
   --round 1 \
@@ -145,6 +154,129 @@ PY
   --round 1 \
   --slot A1 \
   --status closed >/dev/null
+
+if "$LEDGER" record-result \
+  --run-dir "$run_dir" \
+  --round 1 \
+  --slot A2 \
+  --status completed \
+  --summary "Impossible result before spawn." >/dev/null 2>&1; then
+  echo "record-result should reject slots that have not spawned" >&2
+  exit 1
+fi
+
+if "$LEDGER" finalize-round \
+  --run-dir "$run_dir" \
+  --round 1 \
+  --decision stop \
+  --summary "Incomplete round should not finalize." >/dev/null 2>&1; then
+  echo "finalize-round should reject incomplete rounds unless blocked" >&2
+  exit 1
+fi
+
+blocked_run="$("$LEDGER" init \
+  --root "$tmpdir/.superpowers/blocked" \
+  --mode review \
+  --target docs/plan.md \
+  --objective "Test blocked lifecycle handling" \
+  --spawn-tool spawn_agent \
+  --wait-tool wait_agent \
+  --close-tool close_agent \
+  --title "Blocked lifecycle test")"
+
+"$LEDGER" prepare-round \
+  --run-dir "$blocked_run" \
+  --round 1 \
+  --assignments "$six" >/dev/null
+
+if "$LEDGER" record-spawn \
+  --run-dir "$blocked_run" \
+  --round 1 \
+  --slot A1 \
+  --status spawned >/dev/null 2>&1; then
+  echo "record-spawn should require agent-id when status is spawned" >&2
+  exit 1
+fi
+
+if "$LEDGER" record-spawn \
+  --run-dir "$blocked_run" \
+  --round 1 \
+  --slot A1 \
+  --agent-id "   " \
+  --status spawned >/dev/null 2>&1; then
+  echo "record-spawn should reject blank agent-id when status is spawned" >&2
+  exit 1
+fi
+
+"$LEDGER" record-spawn \
+  --run-dir "$blocked_run" \
+  --round 1 \
+  --slot A1 \
+  --agent-id agent-a1 \
+  --status failed >/dev/null
+
+python3 - "$blocked_run/state.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+state = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+if state["next_action"] != "finalize_blocked_round":
+    raise SystemExit("failed spawn should point next_action at finalize_blocked_round")
+PY
+
+if "$LEDGER" record-result \
+  --run-dir "$blocked_run" \
+  --round 1 \
+  --slot A1 \
+  --status completed \
+  --summary "Impossible result after failed spawn." >/dev/null 2>&1; then
+  echo "record-result should reject slots whose spawn did not succeed" >&2
+  exit 1
+fi
+
+if "$LEDGER" record-close \
+  --run-dir "$blocked_run" \
+  --round 1 \
+  --slot A1 \
+  --status closed >/dev/null 2>&1; then
+  echo "record-close should reject slots whose spawn did not succeed" >&2
+  exit 1
+fi
+
+if "$LEDGER" finalize-round \
+  --run-dir "$blocked_run" \
+  --round 1 \
+  --decision continue_round_2 \
+  --summary "Blocked rounds cannot continue." \
+  --blocked >/dev/null 2>&1; then
+  echo "blocked finalize should require --decision stop" >&2
+  exit 1
+fi
+
+"$LEDGER" finalize-round \
+  --run-dir "$blocked_run" \
+  --round 1 \
+  --decision stop \
+  --summary "Worker dispatch failed; user input is required." \
+  --blocked >/dev/null
+
+python3 - "$blocked_run/state.json" "$blocked_run/round-01.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+state = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+round_doc = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))
+if state["status"] != "blocked":
+    raise SystemExit("blocked finalize did not persist blocked run status")
+if state["next_action"] != "blocked":
+    raise SystemExit("blocked finalize did not persist blocked next_action")
+if round_doc["status"] != "blocked":
+    raise SystemExit("blocked finalize did not persist blocked round status")
+if "dispatch failed" not in round_doc["synthesis"].get("stop_reason", ""):
+    raise SystemExit("blocked finalize did not persist stop reason")
+PY
 
 python3 - "$run_dir/round-01.json" <<'PY'
 import json
@@ -237,6 +369,38 @@ if "$LEDGER" prepare-round --run-dir "$run_dir" --round 3 --assignments "$six" >
   exit 1
 fi
 
+for slot in A2 A3 A4 A5 A6; do
+  "$LEDGER" record-spawn \
+    --run-dir "$run_dir" \
+    --round 1 \
+    --slot "$slot" \
+    --agent-id "agent-${slot,,}" \
+    --status spawned >/dev/null
+
+  "$LEDGER" record-result \
+    --run-dir "$run_dir" \
+    --round 1 \
+    --slot "$slot" \
+    --status completed \
+    --summary "$slot returned a usable finding." >/dev/null
+
+  "$LEDGER" record-close \
+    --run-dir "$run_dir" \
+    --round 1 \
+    --slot "$slot" \
+    --status closed >/dev/null
+done
+
+if "$LEDGER" finalize-round \
+  --run-dir "$run_dir" \
+  --round 1 \
+  --decision stop \
+  --summary "Complete round should not be marked blocked." \
+  --blocked >/dev/null 2>&1; then
+  echo "finalize-round should reject --blocked for complete rounds" >&2
+  exit 1
+fi
+
 "$LEDGER" finalize-round \
   --run-dir "$run_dir" \
   --round 1 \
@@ -259,6 +423,57 @@ JSON
   --run-dir "$run_dir" \
   --round 2 \
   --assignments "$round2" >/dev/null
+
+for slot in B1 B2 B3 B4 B5 B6; do
+  "$LEDGER" record-spawn \
+    --run-dir "$run_dir" \
+    --round 2 \
+    --slot "$slot" \
+    --agent-id "agent-${slot,,}" \
+    --status spawned >/dev/null
+
+  "$LEDGER" record-result \
+    --run-dir "$run_dir" \
+    --round 2 \
+    --slot "$slot" \
+    --status completed \
+    --summary "$slot returned a follow-up finding." >/dev/null
+
+  "$LEDGER" record-close \
+    --run-dir "$run_dir" \
+    --round 2 \
+    --slot "$slot" \
+    --status closed >/dev/null
+done
+
+"$LEDGER" finalize-round \
+  --run-dir "$run_dir" \
+  --round 2 \
+  --decision ask_user \
+  --summary "Round three needs explicit approval." >/dev/null
+
+round3="$tmpdir/round3.json"
+cat >"$round3" <<'JSON'
+[
+  {"slot": "C1", "lens": "Approved Follow-up 1", "question": "What needs approved follow-up 1?"},
+  {"slot": "C2", "lens": "Approved Follow-up 2", "question": "What needs approved follow-up 2?"},
+  {"slot": "C3", "lens": "Approved Follow-up 3", "question": "What needs approved follow-up 3?"},
+  {"slot": "C4", "lens": "Approved Follow-up 4", "question": "What needs approved follow-up 4?"},
+  {"slot": "C5", "lens": "Approved Follow-up 5", "question": "What needs approved follow-up 5?"},
+  {"slot": "C6", "lens": "Approved Follow-up 6", "question": "What needs approved follow-up 6?"}
+]
+JSON
+
+if "$LEDGER" prepare-round --run-dir "$run_dir" --round 3 --assignments "$round3" >/dev/null 2>&1; then
+  echo "prepare-round should reject round 3 without user approval" >&2
+  exit 1
+fi
+
+"$LEDGER" prepare-round \
+  --run-dir "$run_dir" \
+  --round 3 \
+  --assignments "$round3" \
+  --user-approved >/dev/null
 
 divergent_root="$tmpdir/.superpowers/divergent"
 divergent_run="$("$LEDGER" init \

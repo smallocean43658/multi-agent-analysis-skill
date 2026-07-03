@@ -380,15 +380,30 @@ def command_record(args: argparse.Namespace, event: str) -> int:
     timestamp = now_iso()
 
     if event == "spawn":
-        if args.agent_id:
-            assignment["agent_id"] = args.agent_id
+        if assignment.get("spawn_status") not in (None, "", "pending"):
+            raise SystemExit(f"{args.slot} already has spawn_status={assignment.get('spawn_status')!r}")
+        agent_id = args.agent_id.strip()
+        if args.status == "spawned" and not agent_id:
+            raise SystemExit(f"{args.slot} must record --agent-id when spawn status is 'spawned'")
+        if agent_id:
+            assignment["agent_id"] = agent_id
         assignment["spawn_status"] = args.status
         assignment["spawn_recorded_at"] = timestamp
     elif event == "result":
+        if assignment.get("spawn_status") != "spawned":
+            raise SystemExit(f"{args.slot} cannot record a result unless spawn_status is 'spawned'")
+        if assignment.get("result_status") not in (None, "", "pending"):
+            raise SystemExit(f"{args.slot} already has result_status={assignment.get('result_status')!r}")
         assignment["result_status"] = args.status
         assignment["result_summary"] = args.summary or assignment.get("result_summary", "")
         assignment["result_recorded_at"] = timestamp
     elif event == "close":
+        if assignment.get("spawn_status") != "spawned":
+            raise SystemExit(f"{args.slot} cannot record close unless spawn_status is 'spawned'")
+        if assignment.get("result_status") in (None, "", "pending"):
+            raise SystemExit(f"{args.slot} cannot record close before result is recorded")
+        if assignment.get("close_status") not in (None, "", "pending"):
+            raise SystemExit(f"{args.slot} already has close_status={assignment.get('close_status')!r}")
         assignment["close_status"] = args.status
         assignment["close_recorded_at"] = timestamp
     else:
@@ -407,7 +422,9 @@ def command_record(args: argparse.Namespace, event: str) -> int:
     write_round(run_dir, round_doc)
 
     counts = round_counts(round_doc)
-    if counts["results"] == EXPECTED_AGENTS_PER_ROUND and counts["closed"] == EXPECTED_AGENTS_PER_ROUND:
+    if event == "spawn" and args.status != "spawned":
+        next_action = "finalize_blocked_round"
+    elif counts["results"] == EXPECTED_AGENTS_PER_ROUND and counts["closed"] == EXPECTED_AGENTS_PER_ROUND:
         next_action = "synthesize_round"
     elif counts["results"] == EXPECTED_AGENTS_PER_ROUND:
         next_action = "close_workers"
@@ -431,9 +448,28 @@ def command_record(args: argparse.Namespace, event: str) -> int:
 def command_finalize_round(args: argparse.Namespace) -> int:
     run_dir = Path(args.run_dir)
     round_doc = load_round(run_dir, args.round)
-    round_doc["status"] = "finalized"
+    counts = round_counts(round_doc)
+    lifecycle_complete = (
+        counts["results"] == EXPECTED_AGENTS_PER_ROUND
+        and counts["closed"] == EXPECTED_AGENTS_PER_ROUND
+    )
+    if not lifecycle_complete and not args.blocked:
+        raise SystemExit(
+            "cannot finalize incomplete round without --blocked "
+            f"(results={counts['results']}, closed={counts['closed']})"
+        )
+    if lifecycle_complete and args.blocked:
+        raise SystemExit("cannot finalize a complete round as blocked")
+    if args.blocked and args.decision != "stop":
+        raise SystemExit("blocked rounds must finalize with --decision stop")
+
+    round_doc["status"] = "blocked" if args.blocked else "finalized"
     round_doc.setdefault("synthesis", {})["next_round_decision"] = args.decision
-    if args.decision == "stop":
+    if args.blocked:
+        round_doc["synthesis"]["stop_reason"] = args.summary
+        next_action = "blocked"
+        status = "blocked"
+    elif args.decision == "stop":
         round_doc["synthesis"]["stop_reason"] = args.summary
         next_action = "complete"
         status = "complete"
@@ -520,6 +556,7 @@ def build_parser() -> argparse.ArgumentParser:
     finalize.add_argument("--round", required=True, type=int)
     finalize.add_argument("--decision", required=True, choices=["stop", "continue_round_2", "ask_user"])
     finalize.add_argument("--summary", required=True)
+    finalize.add_argument("--blocked", action="store_true")
     finalize.set_defaults(func=command_finalize_round)
 
     status = subparsers.add_parser("status", help="Print resumable run status as JSON.")
