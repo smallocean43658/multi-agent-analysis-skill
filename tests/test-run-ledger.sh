@@ -61,6 +61,19 @@ for key in ["spawn", "wait", "close"]:
         raise SystemExit(f"tooling missing {key}")
 PY
 
+if "$LEDGER" init \
+  --root "$tmpdir/.superpowers/bad-tooling" \
+  --mode review \
+  --target docs/plan.md \
+  --objective "Reject blank tool names" \
+  --spawn-tool "   " \
+  --wait-tool wait_agent \
+  --close-tool close_agent \
+  --title "Bad tooling test" >/dev/null 2>&1; then
+  echo "init should reject blank tool names" >&2
+  exit 1
+fi
+
 six="$tmpdir/six.json"
 cat >"$six" <<'JSON'
 [
@@ -72,6 +85,51 @@ cat >"$six" <<'JSON'
   {"slot": "A6", "lens": "Execution Friction", "question": "What makes this hard to use or maintain?"}
 ]
 JSON
+
+fill_synthesis() {
+  local round_json="$1"
+  local decision="$2"
+  local summary="$3"
+  local round_dir
+  local round_file
+  local round_number
+  local synthesis_file
+  round_dir="$(dirname "$round_json")"
+  round_file="$(basename "$round_json")"
+  round_number="${round_file#round-}"
+  round_number="${round_number%.json}"
+  round_number="$((10#$round_number))"
+  synthesis_file="$tmpdir/synthesis-$round_number-$decision.json"
+  python3 - "$synthesis_file" "$decision" "$summary" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+decision = sys.argv[2]
+summary = sys.argv[3]
+synthesis = {}
+synthesis["convergence"] = ["Test convergence."]
+synthesis["disagreement"] = ["Test disagreement."]
+synthesis["critical_disagreements"] = []
+synthesis["cannot_verify"] = []
+synthesis["high_impact_low_evidence"] = []
+synthesis["action_list"] = ["Test action."]
+synthesis["expected_value_of_another_round"] = (
+    "A follow-up round only pays off if unresolved blockers remain."
+)
+synthesis["next_round_decision"] = decision
+if decision == "stop":
+    synthesis["stop_reason"] = summary
+else:
+    synthesis["next_round_question"] = summary
+path.write_text(json.dumps(synthesis, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+PY
+  "$LEDGER" record-synthesis \
+    --run-dir "$round_dir" \
+    --round "$round_number" \
+    --synthesis "$synthesis_file" >/dev/null
+}
 
 "$LEDGER" prepare-round \
   --run-dir "$run_dir" \
@@ -125,6 +183,99 @@ for key in [
     if key not in round_doc.get("synthesis", {}):
         raise SystemExit(f"synthesis missing {key}")
 PY
+
+invalid_status_run="$("$LEDGER" init \
+  --root "$tmpdir/.superpowers/invalid-status" \
+  --mode review \
+  --target docs/plan.md \
+  --objective "Reject invalid lifecycle statuses" \
+  --spawn-tool spawn_agent \
+  --wait-tool wait_agent \
+  --close-tool close_agent \
+  --title "Invalid status test")"
+
+"$LEDGER" prepare-round \
+  --run-dir "$invalid_status_run" \
+  --round 1 \
+  --assignments "$six" >/dev/null
+
+if "$LEDGER" record-spawn \
+  --run-dir "$invalid_status_run" \
+  --round 1 \
+  --slot A1 \
+  --agent-id agent-a1 \
+  --status bogus >/dev/null 2>&1; then
+  echo "record-spawn should reject unknown statuses" >&2
+  exit 1
+fi
+
+"$LEDGER" record-spawn \
+  --run-dir "$invalid_status_run" \
+  --round 1 \
+  --slot A1 \
+  --agent-id agent-a1 \
+  --status spawned >/dev/null
+
+if "$LEDGER" record-result \
+  --run-dir "$invalid_status_run" \
+  --round 1 \
+  --slot A1 \
+  --status bogus \
+  --summary "Invalid result status." >/dev/null 2>&1; then
+  echo "record-result should reject unknown statuses" >&2
+  exit 1
+fi
+
+"$LEDGER" record-result \
+  --run-dir "$invalid_status_run" \
+  --round 1 \
+  --slot A1 \
+  --status completed \
+  --summary "Valid result." >/dev/null
+
+if "$LEDGER" record-close \
+  --run-dir "$invalid_status_run" \
+  --round 1 \
+  --slot A1 \
+  --status bogus >/dev/null 2>&1; then
+  echo "record-close should reject unknown statuses" >&2
+  exit 1
+fi
+
+abnormal_run="$("$LEDGER" init \
+  --root "$tmpdir/.superpowers/abnormal-close" \
+  --mode review \
+  --target docs/plan.md \
+  --objective "Allow abnormal close without a result" \
+  --spawn-tool spawn_agent \
+  --wait-tool wait_agent \
+  --close-tool close_agent \
+  --title "Abnormal close test")"
+
+"$LEDGER" prepare-round \
+  --run-dir "$abnormal_run" \
+  --round 1 \
+  --assignments "$six" >/dev/null
+
+"$LEDGER" record-spawn \
+  --run-dir "$abnormal_run" \
+  --round 1 \
+  --slot A1 \
+  --agent-id agent-a1 \
+  --status spawned >/dev/null
+
+"$LEDGER" record-close \
+  --run-dir "$abnormal_run" \
+  --round 1 \
+  --slot A1 \
+  --status failed >/dev/null
+
+"$LEDGER" finalize-round \
+  --run-dir "$abnormal_run" \
+  --round 1 \
+  --decision stop \
+  --summary "Worker closed abnormally before returning a result." \
+  --blocked >/dev/null
 
 "$LEDGER" record-spawn \
   --run-dir "$run_dir" \
@@ -278,6 +429,99 @@ if "dispatch failed" not in round_doc["synthesis"].get("stop_reason", ""):
     raise SystemExit("blocked finalize did not persist stop reason")
 PY
 
+if "$LEDGER" prepare-round \
+  --run-dir "$blocked_run" \
+  --round 2 \
+  --assignments "$six" >/dev/null 2>&1; then
+  echo "prepare-round should reject runs already marked blocked" >&2
+  exit 1
+fi
+
+open_blocked_run="$("$LEDGER" init \
+  --root "$tmpdir/.superpowers/open-blocked" \
+  --mode review \
+  --target docs/plan.md \
+  --objective "Reject blocked finalization with open workers" \
+  --spawn-tool spawn_agent \
+  --wait-tool wait_agent \
+  --close-tool close_agent \
+  --title "Open blocked test")"
+
+"$LEDGER" prepare-round \
+  --run-dir "$open_blocked_run" \
+  --round 1 \
+  --assignments "$six" >/dev/null
+
+"$LEDGER" record-spawn \
+  --run-dir "$open_blocked_run" \
+  --round 1 \
+  --slot A1 \
+  --agent-id agent-a1 \
+  --status spawned >/dev/null
+
+"$LEDGER" record-spawn \
+  --run-dir "$open_blocked_run" \
+  --round 1 \
+  --slot A2 \
+  --status failed >/dev/null
+
+if "$LEDGER" finalize-round \
+  --run-dir "$open_blocked_run" \
+  --round 1 \
+  --decision stop \
+  --summary "A2 failed while A1 is still open." \
+  --blocked >/dev/null 2>&1; then
+  echo "blocked finalize should reject open spawned workers" >&2
+  exit 1
+fi
+
+failed_result_run="$("$LEDGER" init \
+  --root "$tmpdir/.superpowers/failed-result" \
+  --mode review \
+  --target docs/plan.md \
+  --objective "Do not count failed results as usable" \
+  --spawn-tool spawn_agent \
+  --wait-tool wait_agent \
+  --close-tool close_agent \
+  --title "Failed result test")"
+
+"$LEDGER" prepare-round \
+  --run-dir "$failed_result_run" \
+  --round 1 \
+  --assignments "$six" >/dev/null
+
+for slot in A1 A2 A3 A4 A5 A6; do
+  "$LEDGER" record-spawn \
+    --run-dir "$failed_result_run" \
+    --round 1 \
+    --slot "$slot" \
+    --agent-id "agent-${slot,,}" \
+    --status spawned >/dev/null
+
+  "$LEDGER" record-result \
+    --run-dir "$failed_result_run" \
+    --round 1 \
+    --slot "$slot" \
+    --status failed \
+    --summary "$slot returned a failed result." >/dev/null
+
+  "$LEDGER" record-close \
+    --run-dir "$failed_result_run" \
+    --round 1 \
+    --slot "$slot" \
+    --status closed >/dev/null
+done
+
+fill_synthesis "$failed_result_run/round-01.json" stop "Failed results are not usable."
+if "$LEDGER" finalize-round \
+  --run-dir "$failed_result_run" \
+  --round 1 \
+  --decision stop \
+  --summary "Failed results are not usable." >/dev/null 2>&1; then
+  echo "finalize-round should reject failed results as unusable" >&2
+  exit 1
+fi
+
 python3 - "$run_dir/round-01.json" <<'PY'
 import json
 import sys
@@ -401,11 +645,32 @@ if "$LEDGER" finalize-round \
   exit 1
 fi
 
+if "$LEDGER" finalize-round \
+  --run-dir "$run_dir" \
+  --round 1 \
+  --decision continue_round_2 \
+  --summary "Round two is justified for test coverage." >/dev/null 2>&1; then
+  echo "finalize-round should reject complete rounds until synthesis is populated" >&2
+  exit 1
+fi
+
+fill_synthesis "$run_dir/round-01.json" continue_round_2 "Round two is justified for test coverage."
 "$LEDGER" finalize-round \
   --run-dir "$run_dir" \
   --round 1 \
   --decision continue_round_2 \
   --summary "Round two is justified for test coverage." >/dev/null
+
+python3 - "$run_dir/round-01.md" <<'PY'
+import sys
+from pathlib import Path
+
+text = Path(sys.argv[1]).read_text(encoding="utf-8")
+if "Test convergence." not in text:
+    raise SystemExit("round markdown should render synthesis convergence")
+if "Test action." not in text:
+    raise SystemExit("round markdown should render synthesis actions")
+PY
 
 round2="$tmpdir/round2.json"
 cat >"$round2" <<'JSON'
@@ -446,6 +711,7 @@ for slot in B1 B2 B3 B4 B5 B6; do
     --status closed >/dev/null
 done
 
+fill_synthesis "$run_dir/round-02.json" ask_user "Round three needs explicit approval."
 "$LEDGER" finalize-round \
   --run-dir "$run_dir" \
   --round 2 \

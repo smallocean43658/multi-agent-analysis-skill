@@ -51,7 +51,7 @@ Required `state.json.tooling` shape:
 Every run must create a local record before the first dispatch:
 
 - Root: `.superpowers/multi-agent-analysis/`
-- Run directory format: `YYYY-MM-DD-HHMM-<mode>-<slug>/`
+- Run directory format: `YYYY-MM-DD-HHMM-<mode>-<slug>-<uuid6>/`
 - Required files at initialization: `brief.md`, `ledger.md`, `state.json`
 - Required round files: `round-N.json` and `round-N.md` where `N` is the round number rendered by the helper as `round-01.json`, `round-01.md`, and so on.
 
@@ -68,7 +68,7 @@ scripts/run-ledger init \
   --close-tool "$CLOSE_TOOL"
 ```
 
-The helper owns only mechanical file creation and assignment validation. The main agent still owns judgment: mode selection, lens choice after round one, synthesis, continuation decisions, and user communication.
+The helper owns only mechanical file creation, assignment validation, lifecycle status validation, and rendering structured round JSON into markdown. The main agent still owns judgment: mode selection, lens choice after round one, synthesis, continuation decisions, and user communication.
 
 The `brief.md` file is the canonical handoff. Put the target, objective, known constraints, source paths, and any user-provided context there. Worker prompts should refer to this file instead of pasting long briefs into each worker prompt.
 
@@ -129,7 +129,7 @@ Create the assignment file yourself, then validate it with the helper:
 
 ```bash
 scripts/run-ledger prepare-round \
-  --run-dir .superpowers/multi-agent-analysis/2026-07-03-1200-review-plan \
+  --run-dir .superpowers/multi-agent-analysis/2026-07-03-1200-review-plan-a1b2c3 \
   --round 1 \
   --assignments /tmp/round-01-assignments.json
 ```
@@ -157,8 +157,8 @@ For each round:
 3. Dispatch all six workers. If the API allows batch calls, dispatch them in one batch. Otherwise spawn them one after another without waiting between successful spawns.
 4. Record every spawned agent id and its callable tool name in `round-N.json` and `ledger.md` before waiting.
 5. Wait for every spawned worker.
-6. Record each result before closing the worker.
-7. Close every finished worker and record the close status.
+6. Record each result before a normal close. `record-result --status` must be `completed` or `failed`; only `completed` counts as a usable result.
+7. Close every finished worker and record the close status. `record-close --status` must be `closed`, `failed`, or `cancelled`. Use `closed` only after a result exists; use `failed` or `cancelled` when a worker terminates abnormally without a result.
 8. Synthesize only after six usable results exist or after a documented blocked path stops the run.
 
 Use the helper commands for live bookkeeping:
@@ -185,7 +185,7 @@ scripts/run-ledger record-close \
   --status closed
 ```
 
-If a spawn, wait, or close call fails, write the failure into `ledger.md` and decide whether the run is blocked. On partial spawn failure, drain and close every worker that already spawned before reporting the run as blocked. Do not proceed as if the missing worker returned a result.
+If a spawn, wait, or close call fails, record the failure with the helper and decide whether the run is blocked. On partial spawn failure, drain and close every worker that already spawned before reporting the run as blocked. The helper rejects blocked finalization while any spawned worker is still open. Do not proceed as if a missing or failed worker returned a usable result.
 
 ## Resume And Recovery
 
@@ -200,7 +200,7 @@ Trust `state.json` and the latest `round-N.json` over conversation memory. Conti
 
 ## Synthesis Contract
 
-After each complete round, write a synthesis into the round markdown file and structured decision fields into the round JSON file. Include:
+After each complete round, write a synthesis into the structured fields in `round-N.json`; the helper renders those fields into `round-N.md` whenever it writes the round. Include:
 
 - `convergence`: issues surfaced by multiple lenses
 - `disagreement`: conflicts between lenses
@@ -214,6 +214,17 @@ After each complete round, write a synthesis into the round markdown file and st
 
 Do not average away disagreement. Preserve conflicts and name the evidence that would resolve them.
 
+For normal finalization, the helper requires non-empty `convergence`, `action_list`, and `expected_value_of_another_round`. Populate the full synthesis before calling `finalize-round`; do not use finalization as a substitute for writing the synthesis.
+
+Record the synthesis with a JSON object, then let the helper render `round-N.md`:
+
+```bash
+scripts/run-ledger record-synthesis \
+  --run-dir .superpowers/multi-agent-analysis/<run-id> \
+  --round 1 \
+  --synthesis /tmp/round-01-synthesis.json
+```
+
 After the synthesis is written, mark the round decision:
 
 ```bash
@@ -226,7 +237,7 @@ scripts/run-ledger finalize-round \
 
 Use `--decision continue_round_2` only when the continuation gate is satisfied. Use `--decision ask_user` when user approval is required before the next dispatch.
 
-If a worker lifecycle is blocked and cannot produce six result+close records, document the blocker and finalize the incomplete round with `--blocked`. Blocked rounds must stop:
+If a worker lifecycle is blocked and cannot produce six completed result records plus six normal close records, document the blocker and finalize the incomplete round with `--blocked`. Blocked rounds must stop, and all successfully spawned workers must already have a terminal close status (`closed`, `failed`, or `cancelled`):
 
 ```bash
 scripts/run-ledger finalize-round \
@@ -287,8 +298,9 @@ Never do these:
 
 - Do not trigger this skill for ordinary review, planning, debugging, brainstorming, or PR review without explicit multi-agent wording.
 - Do not run fewer than six workers while claiming this skill was used.
-- Do not synthesize or finalize a round before all spawned workers have result and close records, unless the round is explicitly finalized with a documented blocked path.
-- Do not record a worker result or close status before its spawn is recorded in `round-N.json`.
+- Do not synthesize or normally finalize a round before all spawned workers have completed result records and normal close records.
+- Do not finalize a blocked round while any spawned worker is still open.
+- Do not record a worker result or successful close status before its spawn is recorded in `round-N.json`.
 - Do not continue to Round 3 or Round 4 without user approval.
 - Do not replace a failed worker silently; report the blocked lifecycle and ask before restarting the round.
 

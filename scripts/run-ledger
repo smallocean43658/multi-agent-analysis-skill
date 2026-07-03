@@ -33,6 +33,26 @@ DIVERGENT_ROUND_ONE_LENSES = {
     "S6": "Wildcard Non-Obvious Angle",
 }
 DIVERGENT_WILDCARD_KEYS = ["wildcard_family", "why_material", "why_not_redundant"]
+SPAWN_STATUSES = {"spawned", "failed"}
+RESULT_STATUSES = {"completed", "failed"}
+CLOSE_STATUSES = {"closed", "failed", "cancelled"}
+ABNORMAL_CLOSE_STATUSES = {"failed", "cancelled"}
+TERMINAL_RUN_STATES = {"blocked", "complete"}
+SYNTHESIS_LIST_FIELDS = [
+    "convergence",
+    "disagreement",
+    "critical_disagreements",
+    "cannot_verify",
+    "high_impact_low_evidence",
+    "action_list",
+]
+SYNTHESIS_TEXT_FIELDS = [
+    "expected_value_of_another_round",
+    "next_round_decision",
+    "stop_reason",
+    "next_round_question",
+]
+SYNTHESIS_DECISIONS = {"", "stop", "continue_round_2", "ask_user"}
 
 
 def now_iso() -> str:
@@ -64,6 +84,12 @@ def append_ledger(run_dir: Path, message: str) -> None:
     ledger = run_dir / "ledger.md"
     with ledger.open("a", encoding="utf-8") as handle:
         handle.write(f"- {now_iso()} - {message}\n")
+
+
+def require_cli_text(value: Any, name: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise SystemExit(f"{name} must be a non-empty string")
+    return value.strip()
 
 
 def create_unique_run_dir(root: Path, mode: str, title: str) -> tuple[str, Path]:
@@ -116,6 +142,9 @@ def command_init(args: argparse.Namespace) -> int:
     (root / ".gitignore").write_text("*\n!.gitignore\n", encoding="utf-8")
 
     title = args.title or args.target
+    spawn_tool = require_cli_text(args.spawn_tool, "--spawn-tool")
+    wait_tool = require_cli_text(args.wait_tool, "--wait-tool")
+    close_tool = require_cli_text(args.close_tool, "--close-tool")
     run_id, run_dir = create_unique_run_dir(root, args.mode, title)
 
     state = {
@@ -131,9 +160,9 @@ def command_init(args: argparse.Namespace) -> int:
         "run_dir": str(run_dir),
         "cwd": args.cwd or "",
         "tooling": {
-            "spawn": args.spawn_tool,
-            "wait": args.wait_tool,
-            "close": args.close_tool,
+            "spawn": spawn_tool,
+            "wait": wait_tool,
+            "close": close_tool,
         },
         "expected_agents_per_round": EXPECTED_AGENTS_PER_ROUND,
         "round_cap": ROUND_CAP,
@@ -207,11 +236,30 @@ def markdown_escape(value: Any) -> str:
     return str(value).replace("|", "\\|").replace("\n", " ")
 
 
+def non_empty_text(value: Any) -> str:
+    if value is None:
+        return ""
+    return str(value).strip()
+
+
+def markdown_list(value: Any) -> str:
+    if not isinstance(value, list):
+        return "- None recorded"
+    lines = [f"- {non_empty_text(item)}" for item in value if non_empty_text(item)]
+    return "\n".join(lines) if lines else "- None recorded"
+
+
+def markdown_field(value: Any) -> str:
+    text = non_empty_text(value)
+    return text if text else "None recorded"
+
+
 def render_round_markdown(round_doc: dict[str, Any]) -> str:
     rows = [
         "| Slot | Lens | Question | Agent ID | Result | Close |",
         "|---|---|---|---|---|---|",
     ]
+    result_lines: list[str] = []
     for item in round_doc["assignments"]:
         rows.append(
             "| {slot} | {lens} | {question} | {agent_id} | {result_status} | {close_status} |".format(
@@ -223,6 +271,18 @@ def render_round_markdown(round_doc: dict[str, Any]) -> str:
                 close_status=markdown_escape(item.get("close_status") or "pending"),
             )
         )
+        summary = non_empty_text(item.get("result_summary"))
+        if summary or item.get("result_status") not in (None, "", "pending"):
+            result_lines.append(
+                "- {slot} ({status}): {summary}".format(
+                    slot=item["slot"],
+                    status=item.get("result_status") or "pending",
+                    summary=summary or "No summary recorded",
+                )
+            )
+
+    synthesis = round_doc.get("synthesis", {})
+    result_body = "\n".join(result_lines) if result_lines else "- None recorded"
 
     return f"""# Round {round_doc["round"]:02d}
 
@@ -235,11 +295,49 @@ Created: {round_doc["created_at"]}
 
 ## Results
 
-Record each worker result here before synthesis.
+{result_body}
 
 ## Synthesis
 
-Complete after all six usable results are recorded, or document why the run is blocked.
+### Convergence
+
+{markdown_list(synthesis.get("convergence"))}
+
+### Disagreement
+
+{markdown_list(synthesis.get("disagreement"))}
+
+### Critical Disagreements
+
+{markdown_list(synthesis.get("critical_disagreements"))}
+
+### Cannot Verify
+
+{markdown_list(synthesis.get("cannot_verify"))}
+
+### High Impact Low Evidence
+
+{markdown_list(synthesis.get("high_impact_low_evidence"))}
+
+### Action List
+
+{markdown_list(synthesis.get("action_list"))}
+
+### Expected Value Of Another Round
+
+{markdown_field(synthesis.get("expected_value_of_another_round"))}
+
+### Decision
+
+{markdown_field(synthesis.get("next_round_decision"))}
+
+### Stop Reason
+
+{markdown_field(synthesis.get("stop_reason"))}
+
+### Next Round Question
+
+{markdown_field(synthesis.get("next_round_question"))}
 """
 
 
@@ -271,14 +369,115 @@ def find_assignment(round_doc: dict[str, Any], slot: str) -> dict[str, Any]:
     raise SystemExit(f"round-{round_doc.get('round', 0):02d} has no assignment slot {slot!r}")
 
 
+def validate_record_status(event: str, status: str) -> str:
+    value = require_cli_text(status, "--status")
+    allowed_by_event = {
+        "spawn": SPAWN_STATUSES,
+        "result": RESULT_STATUSES,
+        "close": CLOSE_STATUSES,
+    }
+    allowed = allowed_by_event[event]
+    if value not in allowed:
+        raise SystemExit(
+            f"invalid {event} status {value!r}; expected one of {', '.join(sorted(allowed))}"
+        )
+    return value
+
+
 def round_counts(round_doc: dict[str, Any]) -> dict[str, int]:
     assignments = round_doc.get("assignments", [])
     return {
         "assignments": len(assignments),
-        "spawned": sum(1 for item in assignments if item.get("spawn_status") not in (None, "", "pending")),
-        "results": sum(1 for item in assignments if item.get("result_status") not in (None, "", "pending")),
-        "closed": sum(1 for item in assignments if item.get("close_status") not in (None, "", "pending")),
+        "spawned": sum(1 for item in assignments if item.get("spawn_status") == "spawned"),
+        "spawn_failures": sum(1 for item in assignments if item.get("spawn_status") == "failed"),
+        "results": sum(1 for item in assignments if item.get("result_status") == "completed"),
+        "result_failures": sum(1 for item in assignments if item.get("result_status") == "failed"),
+        "closed": sum(1 for item in assignments if item.get("close_status") == "closed"),
+        "close_failures": sum(1 for item in assignments if item.get("close_status") in ABNORMAL_CLOSE_STATUSES),
+        "terminal_closes": sum(1 for item in assignments if item.get("close_status") in CLOSE_STATUSES),
+        "open_spawned": sum(
+            1
+            for item in assignments
+            if item.get("spawn_status") == "spawned" and item.get("close_status") not in CLOSE_STATUSES
+        ),
     }
+
+
+def open_spawned_slots(round_doc: dict[str, Any]) -> list[str]:
+    slots: list[str] = []
+    for item in round_doc.get("assignments", []):
+        if item.get("spawn_status") == "spawned" and item.get("close_status") not in CLOSE_STATUSES:
+            slots.append(str(item.get("slot")))
+    return slots
+
+
+def list_has_content(value: Any) -> bool:
+    return isinstance(value, list) and any(non_empty_text(item) for item in value)
+
+
+def require_synthesis_ready(round_doc: dict[str, Any]) -> None:
+    synthesis = round_doc.get("synthesis")
+    if not isinstance(synthesis, dict):
+        raise SystemExit("cannot finalize complete round before synthesis is populated")
+
+    missing: list[str] = []
+    if not list_has_content(synthesis.get("convergence")):
+        missing.append("convergence")
+    if not list_has_content(synthesis.get("action_list")):
+        missing.append("action_list")
+    if not non_empty_text(synthesis.get("expected_value_of_another_round")):
+        missing.append("expected_value_of_another_round")
+
+    if missing:
+        raise SystemExit(
+            "cannot finalize complete round before synthesis is populated: "
+            + ", ".join(missing)
+        )
+
+
+def synthesis_is_ready(round_doc: dict[str, Any]) -> bool:
+    try:
+        require_synthesis_ready(round_doc)
+    except SystemExit:
+        return False
+    return True
+
+
+def validate_synthesis_payload(raw: Any) -> dict[str, Any]:
+    if not isinstance(raw, dict):
+        raise SystemExit("synthesis JSON must contain an object")
+
+    allowed = set(SYNTHESIS_LIST_FIELDS) | set(SYNTHESIS_TEXT_FIELDS)
+    unknown = set(raw) - allowed
+    if unknown:
+        raise SystemExit(f"synthesis JSON has unknown fields: {', '.join(sorted(unknown))}")
+
+    validated: dict[str, Any] = {}
+    for key in SYNTHESIS_LIST_FIELDS:
+        if key not in raw:
+            continue
+        value = raw[key]
+        if not isinstance(value, list):
+            raise SystemExit(f"synthesis field {key!r} must be an array")
+        for index, item in enumerate(value, start=1):
+            if not isinstance(item, str):
+                raise SystemExit(f"synthesis field {key!r} item {index} must be a string")
+        validated[key] = value
+
+    for key in SYNTHESIS_TEXT_FIELDS:
+        if key not in raw:
+            continue
+        value = raw[key]
+        if not isinstance(value, str):
+            raise SystemExit(f"synthesis field {key!r} must be a string")
+        if key == "next_round_decision" and value not in SYNTHESIS_DECISIONS:
+            raise SystemExit(
+                "synthesis field 'next_round_decision' must be one of "
+                + ", ".join(sorted(SYNTHESIS_DECISIONS))
+            )
+        validated[key] = value
+
+    return validated
 
 
 def update_state(run_dir: Path, **updates: Any) -> dict[str, Any]:
@@ -296,6 +495,10 @@ def command_prepare_round(args: argparse.Namespace) -> int:
         raise SystemExit(f"run directory does not exist: {run_dir}")
 
     state = load_state(run_dir)
+    if state.get("status") in TERMINAL_RUN_STATES or state.get("next_action") in TERMINAL_RUN_STATES:
+        raise SystemExit(
+            f"cannot prepare another round because run status is {state.get('status')!r}"
+        )
 
     round_number = args.round
     round_cap = int(state.get("round_cap", ROUND_CAP))
@@ -378,33 +581,37 @@ def command_record(args: argparse.Namespace, event: str) -> int:
     round_doc = load_round(run_dir, args.round)
     assignment = find_assignment(round_doc, args.slot)
     timestamp = now_iso()
+    status = validate_record_status(event, args.status)
 
     if event == "spawn":
         if assignment.get("spawn_status") not in (None, "", "pending"):
             raise SystemExit(f"{args.slot} already has spawn_status={assignment.get('spawn_status')!r}")
         agent_id = args.agent_id.strip()
-        if args.status == "spawned" and not agent_id:
+        if status == "spawned" and not agent_id:
             raise SystemExit(f"{args.slot} must record --agent-id when spawn status is 'spawned'")
         if agent_id:
             assignment["agent_id"] = agent_id
-        assignment["spawn_status"] = args.status
+        assignment["spawn_status"] = status
         assignment["spawn_recorded_at"] = timestamp
     elif event == "result":
         if assignment.get("spawn_status") != "spawned":
             raise SystemExit(f"{args.slot} cannot record a result unless spawn_status is 'spawned'")
         if assignment.get("result_status") not in (None, "", "pending"):
             raise SystemExit(f"{args.slot} already has result_status={assignment.get('result_status')!r}")
-        assignment["result_status"] = args.status
+        assignment["result_status"] = status
         assignment["result_summary"] = args.summary or assignment.get("result_summary", "")
         assignment["result_recorded_at"] = timestamp
     elif event == "close":
         if assignment.get("spawn_status") != "spawned":
             raise SystemExit(f"{args.slot} cannot record close unless spawn_status is 'spawned'")
-        if assignment.get("result_status") in (None, "", "pending"):
-            raise SystemExit(f"{args.slot} cannot record close before result is recorded")
+        if assignment.get("result_status") in (None, "", "pending") and status == "closed":
+            raise SystemExit(
+                f"{args.slot} cannot record successful close before result is recorded; "
+                "use status failed or cancelled for abnormal close"
+            )
         if assignment.get("close_status") not in (None, "", "pending"):
             raise SystemExit(f"{args.slot} already has close_status={assignment.get('close_status')!r}")
-        assignment["close_status"] = args.status
+        assignment["close_status"] = status
         assignment["close_recorded_at"] = timestamp
     else:
         raise SystemExit(f"unknown record event: {event}")
@@ -413,7 +620,7 @@ def command_record(args: argparse.Namespace, event: str) -> int:
         {
             "event": event,
             "slot": args.slot,
-            "status": args.status,
+            "status": status,
             "agent_id": assignment.get("agent_id"),
             "summary": args.summary or "",
             "recorded_at": timestamp,
@@ -422,7 +629,14 @@ def command_record(args: argparse.Namespace, event: str) -> int:
     write_round(run_dir, round_doc)
 
     counts = round_counts(round_doc)
-    if event == "spawn" and args.status != "spawned":
+    has_failures = (
+        counts["spawn_failures"] > 0
+        or counts["result_failures"] > 0
+        or counts["close_failures"] > 0
+    )
+    if has_failures and counts["open_spawned"] > 0:
+        next_action = "close_workers"
+    elif has_failures:
         next_action = "finalize_blocked_round"
     elif counts["results"] == EXPECTED_AGENTS_PER_ROUND and counts["closed"] == EXPECTED_AGENTS_PER_ROUND:
         next_action = "synthesize_round"
@@ -438,8 +652,47 @@ def command_record(args: argparse.Namespace, event: str) -> int:
     )
     append_ledger(
         run_dir,
-        f"record-{event} round-{args.round:02d} {args.slot} status={args.status}"
+        f"record-{event} round-{args.round:02d} {args.slot} status={status}"
         + (f" agent_id={assignment.get('agent_id')}" if assignment.get("agent_id") else ""),
+    )
+    print(run_dir / f"round-{args.round:02d}.json")
+    return 0
+
+
+def command_record_synthesis(args: argparse.Namespace) -> int:
+    run_dir = Path(args.run_dir)
+    round_doc = load_round(run_dir, args.round)
+    if round_doc.get("status") in {"finalized", "blocked"}:
+        raise SystemExit(f"round-{args.round:02d} is already {round_doc.get('status')}")
+
+    payload = validate_synthesis_payload(read_json(Path(args.synthesis)))
+    synthesis = round_doc.setdefault("synthesis", {})
+    if not isinstance(synthesis, dict):
+        raise SystemExit("round synthesis must be an object")
+    synthesis.update(payload)
+    round_doc["synthesis_recorded_at"] = now_iso()
+    write_round(run_dir, round_doc)
+
+    counts = round_counts(round_doc)
+    lifecycle_complete = (
+        counts["results"] == EXPECTED_AGENTS_PER_ROUND
+        and counts["closed"] == EXPECTED_AGENTS_PER_ROUND
+    )
+    if lifecycle_complete and synthesis_is_ready(round_doc):
+        next_action = "finalize_round"
+    elif lifecycle_complete:
+        next_action = "synthesize_round"
+    else:
+        next_action = "continue_lifecycle"
+    update_state(
+        run_dir,
+        status="round_in_progress",
+        current_round=args.round,
+        next_action=next_action,
+    )
+    append_ledger(
+        run_dir,
+        f"record-synthesis round-{args.round:02d} fields={','.join(sorted(payload))}",
     )
     print(run_dir / f"round-{args.round:02d}.json")
     return 0
@@ -462,6 +715,15 @@ def command_finalize_round(args: argparse.Namespace) -> int:
         raise SystemExit("cannot finalize a complete round as blocked")
     if args.blocked and args.decision != "stop":
         raise SystemExit("blocked rounds must finalize with --decision stop")
+    if args.blocked:
+        open_slots = open_spawned_slots(round_doc)
+        if open_slots:
+            raise SystemExit(
+                "cannot finalize blocked round while spawned workers are still open: "
+                + ", ".join(open_slots)
+            )
+    else:
+        require_synthesis_ready(round_doc)
 
     round_doc["status"] = "blocked" if args.blocked else "finalized"
     round_doc.setdefault("synthesis", {})["next_round_decision"] = args.decision
@@ -550,6 +812,12 @@ def build_parser() -> argparse.ArgumentParser:
         record.add_argument("--agent-id", default="")
         record.add_argument("--summary", default="")
         record.set_defaults(func=lambda args, event=event: command_record(args, event))
+
+    synthesis = subparsers.add_parser("record-synthesis", help="Merge structured synthesis into a round.")
+    synthesis.add_argument("--run-dir", required=True)
+    synthesis.add_argument("--round", required=True, type=int)
+    synthesis.add_argument("--synthesis", required=True, help="Path to synthesis JSON object.")
+    synthesis.set_defaults(func=command_record_synthesis)
 
     finalize = subparsers.add_parser("finalize-round", help="Mark synthesis decision for a round.")
     finalize.add_argument("--run-dir", required=True)
