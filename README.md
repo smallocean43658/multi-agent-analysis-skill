@@ -93,6 +93,13 @@ git pull --ff-only
 
 ## Requirements
 
+Local validation requires:
+
+- Python >= 3.10
+- Bash >= 4
+
+On macOS, the system `/bin/bash` is often Bash 3.2. Install a newer Bash and run the shell tests with that binary when validating this repository.
+
 The skill requires real worker-capable multi-agent tools in the active Codex session:
 
 - spawn worker
@@ -150,14 +157,23 @@ Run the smoke tests after changing triggers, modes, lifecycle behavior, synthesi
 ```bash
 python3 tests/test-prompt-contract.py
 bash tests/test-run-ledger.sh
+bash tests/test-release-metadata.sh
 ```
+
+Smoke tests do not exercise live multi-agent tool calls. They validate prompt contracts, helper state transitions, and release metadata. A real analysis run still requires worker-capable tools in the active Codex session.
+
+## License
+
+This repository uses a restricted license. You may use and modify it for personal, internal, or private project use. You may not publish, redistribute, sublicense, sell, package, mirror, host, or otherwise make original or modified copies available to third parties without prior written permission. See `LICENSE`.
 
 ## Repository Layout
 
+- `LICENSE`: restricted use license; use and modification are permitted, publishing and redistribution are not.
 - `SKILL.md`: the actual Codex skill instructions.
 - `round-subagent-prompt.md`: worker prompt template.
 - `scripts/run-ledger`: helper for run records and lifecycle validation.
 - `test-prompts.json`: prompt contract corpus.
 - `tests/test-prompt-contract.py`: validates trigger and mode contracts.
 - `tests/test-run-ledger.sh`: validates ledger state transitions.
+- `tests/test-release-metadata.sh`: validates public repository metadata and compatibility notes.
 - `MAINTENANCE.md`: maintainer notes, change log, verification checklist, and known limits.

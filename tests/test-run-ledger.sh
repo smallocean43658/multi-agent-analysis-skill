@@ -184,6 +184,34 @@ for key in [
         raise SystemExit(f"synthesis missing {key}")
 PY
 
+premature_synthesis="$tmpdir/premature-synthesis.json"
+python3 - "$premature_synthesis" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+Path(sys.argv[1]).write_text(
+    json.dumps(
+        {
+            "convergence": ["No evidence exists yet."],
+            "action_list": ["Do not accept this."],
+            "expected_value_of_another_round": "Unknown before lifecycle completion.",
+        },
+        indent=2,
+    )
+    + "\n",
+    encoding="utf-8",
+)
+PY
+
+if "$LEDGER" record-synthesis \
+  --run-dir "$run_dir" \
+  --round 1 \
+  --synthesis "$premature_synthesis" >/dev/null 2>&1; then
+  echo "record-synthesis should reject rounds before lifecycle completion" >&2
+  exit 1
+fi
+
 invalid_status_run="$("$LEDGER" init \
   --root "$tmpdir/.superpowers/invalid-status" \
   --mode review \
@@ -276,6 +304,16 @@ abnormal_run="$("$LEDGER" init \
   --decision stop \
   --summary "Worker closed abnormally before returning a result." \
   --blocked >/dev/null
+
+if "$LEDGER" finalize-round \
+  --run-dir "$abnormal_run" \
+  --round 1 \
+  --decision stop \
+  --summary "Blocked rounds should not finalize twice." \
+  --blocked >/dev/null 2>&1; then
+  echo "finalize-round should reject already blocked rounds" >&2
+  exit 1
+fi
 
 "$LEDGER" record-spawn \
   --run-dir "$run_dir" \
@@ -429,6 +467,16 @@ if "dispatch failed" not in round_doc["synthesis"].get("stop_reason", ""):
     raise SystemExit("blocked finalize did not persist stop reason")
 PY
 
+if "$LEDGER" record-spawn \
+  --run-dir "$blocked_run" \
+  --round 1 \
+  --slot A2 \
+  --agent-id agent-a2 \
+  --status spawned >/dev/null 2>&1; then
+  echo "record-spawn should reject terminal blocked rounds" >&2
+  exit 1
+fi
+
 if "$LEDGER" prepare-round \
   --run-dir "$blocked_run" \
   --round 2 \
@@ -475,6 +523,31 @@ if "$LEDGER" finalize-round \
   exit 1
 fi
 
+no_activity_blocked_run="$("$LEDGER" init \
+  --root "$tmpdir/.superpowers/no-activity-blocked" \
+  --mode review \
+  --target docs/plan.md \
+  --objective "Reject fabricated blocked rounds" \
+  --spawn-tool spawn_agent \
+  --wait-tool wait_agent \
+  --close-tool close_agent \
+  --title "No activity blocked test")"
+
+"$LEDGER" prepare-round \
+  --run-dir "$no_activity_blocked_run" \
+  --round 1 \
+  --assignments "$six" >/dev/null
+
+if "$LEDGER" finalize-round \
+  --run-dir "$no_activity_blocked_run" \
+  --round 1 \
+  --decision stop \
+  --summary "No worker activity happened." \
+  --blocked >/dev/null 2>&1; then
+  echo "blocked finalize should require recorded lifecycle failure evidence" >&2
+  exit 1
+fi
+
 failed_result_run="$("$LEDGER" init \
   --root "$tmpdir/.superpowers/failed-result" \
   --mode review \
@@ -512,7 +585,14 @@ for slot in A1 A2 A3 A4 A5 A6; do
     --status closed >/dev/null
 done
 
-fill_synthesis "$failed_result_run/round-01.json" stop "Failed results are not usable."
+if "$LEDGER" record-synthesis \
+  --run-dir "$failed_result_run" \
+  --round 1 \
+  --synthesis "$premature_synthesis" >/dev/null 2>&1; then
+  echo "record-synthesis should reject rounds without six completed usable results" >&2
+  exit 1
+fi
+
 if "$LEDGER" finalize-round \
   --run-dir "$failed_result_run" \
   --round 1 \
@@ -553,6 +633,24 @@ if status["rounds"]["round-01"]["spawned"] != 1:
     raise SystemExit("status spawned count mismatch")
 if status["rounds"]["round-01"]["closed"] != 1:
     raise SystemExit("status closed count mismatch")
+PY
+
+python3 - "$run_dir/round-01-synthesis.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+Path(sys.argv[1]).write_text(json.dumps({"not": "a round"}) + "\n", encoding="utf-8")
+PY
+
+status_json="$("$LEDGER" status --run-dir "$run_dir")"
+python3 - "$status_json" <<'PY'
+import json
+import sys
+
+status = json.loads(sys.argv[1])
+if "round-01-synthesis" in status["rounds"]:
+    raise SystemExit("status should ignore round sidecar JSON files")
 PY
 
 five="$tmpdir/five.json"
@@ -655,6 +753,15 @@ if "$LEDGER" finalize-round \
 fi
 
 fill_synthesis "$run_dir/round-01.json" continue_round_2 "Round two is justified for test coverage."
+if "$LEDGER" finalize-round \
+  --run-dir "$run_dir" \
+  --round 1 \
+  --decision ask_user \
+  --summary "Round one cannot ask for user approval." >/dev/null 2>&1; then
+  echo "finalize-round should reject round 1 ask_user decisions" >&2
+  exit 1
+fi
+
 "$LEDGER" finalize-round \
   --run-dir "$run_dir" \
   --round 1 \
@@ -712,11 +819,29 @@ for slot in B1 B2 B3 B4 B5 B6; do
 done
 
 fill_synthesis "$run_dir/round-02.json" ask_user "Round three needs explicit approval."
+if "$LEDGER" finalize-round \
+  --run-dir "$run_dir" \
+  --round 2 \
+  --decision continue_round_2 \
+  --summary "Round two cannot request continue_round_2." >/dev/null 2>&1; then
+  echo "finalize-round should reject round 2 continue_round_2 decisions" >&2
+  exit 1
+fi
+
 "$LEDGER" finalize-round \
   --run-dir "$run_dir" \
   --round 2 \
   --decision ask_user \
   --summary "Round three needs explicit approval." >/dev/null
+
+if "$LEDGER" finalize-round \
+  --run-dir "$run_dir" \
+  --round 2 \
+  --decision stop \
+  --summary "Finalized rounds should not be rewritten." >/dev/null 2>&1; then
+  echo "finalize-round should reject already finalized rounds" >&2
+  exit 1
+fi
 
 round3="$tmpdir/round3.json"
 cat >"$round3" <<'JSON'

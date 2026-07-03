@@ -38,6 +38,8 @@ RESULT_STATUSES = {"completed", "failed"}
 CLOSE_STATUSES = {"closed", "failed", "cancelled"}
 ABNORMAL_CLOSE_STATUSES = {"failed", "cancelled"}
 TERMINAL_RUN_STATES = {"blocked", "complete"}
+TERMINAL_ROUND_STATES = {"blocked", "finalized"}
+ROUND_JSON_PATTERN = re.compile(r"round-\d{2}\.json$")
 SYNTHESIS_LIST_FIELDS = [
     "convergence",
     "disagreement",
@@ -403,6 +405,42 @@ def round_counts(round_doc: dict[str, Any]) -> dict[str, int]:
     }
 
 
+def lifecycle_complete(round_doc: dict[str, Any]) -> bool:
+    counts = round_counts(round_doc)
+    return (
+        counts["results"] == EXPECTED_AGENTS_PER_ROUND
+        and counts["closed"] == EXPECTED_AGENTS_PER_ROUND
+    )
+
+
+def has_lifecycle_failure(round_doc: dict[str, Any]) -> bool:
+    counts = round_counts(round_doc)
+    return (
+        counts["spawn_failures"] > 0
+        or counts["result_failures"] > 0
+        or counts["close_failures"] > 0
+    )
+
+
+def require_mutable_round(run_dir: Path, round_doc: dict[str, Any]) -> None:
+    state = load_state(run_dir)
+    if state.get("status") in TERMINAL_RUN_STATES or state.get("next_action") in TERMINAL_RUN_STATES:
+        raise SystemExit(f"run is terminal with status={state.get('status')!r}")
+    if round_doc.get("status") in TERMINAL_ROUND_STATES:
+        raise SystemExit(
+            f"round-{int(round_doc.get('round', 0)):02d} is already {round_doc.get('status')}"
+        )
+
+
+def validate_round_decision(round_number: int, decision: str, round_cap: int) -> None:
+    if decision == "continue_round_2" and round_number != 1:
+        raise SystemExit("continue_round_2 is only valid when finalizing round 1")
+    if decision == "ask_user" and round_number < 2:
+        raise SystemExit("ask_user is only valid when finalizing round 2 or later")
+    if decision == "ask_user" and round_number >= round_cap:
+        raise SystemExit(f"round {round_number} is the round cap; decision must be stop")
+
+
 def open_spawned_slots(round_doc: dict[str, Any]) -> list[str]:
     slots: list[str] = []
     for item in round_doc.get("assignments", []):
@@ -579,6 +617,7 @@ def command_prepare_round(args: argparse.Namespace) -> int:
 def command_record(args: argparse.Namespace, event: str) -> int:
     run_dir = Path(args.run_dir)
     round_doc = load_round(run_dir, args.round)
+    require_mutable_round(run_dir, round_doc)
     assignment = find_assignment(round_doc, args.slot)
     timestamp = now_iso()
     status = validate_record_status(event, args.status)
@@ -662,8 +701,13 @@ def command_record(args: argparse.Namespace, event: str) -> int:
 def command_record_synthesis(args: argparse.Namespace) -> int:
     run_dir = Path(args.run_dir)
     round_doc = load_round(run_dir, args.round)
-    if round_doc.get("status") in {"finalized", "blocked"}:
-        raise SystemExit(f"round-{args.round:02d} is already {round_doc.get('status')}")
+    require_mutable_round(run_dir, round_doc)
+    if not lifecycle_complete(round_doc):
+        counts = round_counts(round_doc)
+        raise SystemExit(
+            "cannot record synthesis before lifecycle completion "
+            f"(results={counts['results']}, closed={counts['closed']})"
+        )
 
     payload = validate_synthesis_payload(read_json(Path(args.synthesis)))
     synthesis = round_doc.setdefault("synthesis", {})
@@ -673,17 +717,10 @@ def command_record_synthesis(args: argparse.Namespace) -> int:
     round_doc["synthesis_recorded_at"] = now_iso()
     write_round(run_dir, round_doc)
 
-    counts = round_counts(round_doc)
-    lifecycle_complete = (
-        counts["results"] == EXPECTED_AGENTS_PER_ROUND
-        and counts["closed"] == EXPECTED_AGENTS_PER_ROUND
-    )
-    if lifecycle_complete and synthesis_is_ready(round_doc):
+    if synthesis_is_ready(round_doc):
         next_action = "finalize_round"
-    elif lifecycle_complete:
-        next_action = "synthesize_round"
     else:
-        next_action = "continue_lifecycle"
+        next_action = "synthesize_round"
     update_state(
         run_dir,
         status="round_in_progress",
@@ -701,21 +738,23 @@ def command_record_synthesis(args: argparse.Namespace) -> int:
 def command_finalize_round(args: argparse.Namespace) -> int:
     run_dir = Path(args.run_dir)
     round_doc = load_round(run_dir, args.round)
+    require_mutable_round(run_dir, round_doc)
+    state = load_state(run_dir)
     counts = round_counts(round_doc)
-    lifecycle_complete = (
-        counts["results"] == EXPECTED_AGENTS_PER_ROUND
-        and counts["closed"] == EXPECTED_AGENTS_PER_ROUND
-    )
-    if not lifecycle_complete and not args.blocked:
+    round_complete = lifecycle_complete(round_doc)
+    validate_round_decision(args.round, args.decision, int(state.get("round_cap", ROUND_CAP)))
+    if not round_complete and not args.blocked:
         raise SystemExit(
             "cannot finalize incomplete round without --blocked "
             f"(results={counts['results']}, closed={counts['closed']})"
         )
-    if lifecycle_complete and args.blocked:
+    if round_complete and args.blocked:
         raise SystemExit("cannot finalize a complete round as blocked")
     if args.blocked and args.decision != "stop":
         raise SystemExit("blocked rounds must finalize with --decision stop")
     if args.blocked:
+        if not has_lifecycle_failure(round_doc):
+            raise SystemExit("blocked rounds require a recorded lifecycle failure")
         open_slots = open_spawned_slots(round_doc)
         if open_slots:
             raise SystemExit(
@@ -762,6 +801,8 @@ def command_status(args: argparse.Namespace) -> int:
     state = load_state(run_dir)
     rounds: dict[str, Any] = {}
     for round_path in sorted(run_dir.glob("round-*.json")):
+        if not ROUND_JSON_PATTERN.fullmatch(round_path.name):
+            continue
         round_doc = read_json(round_path)
         if isinstance(round_doc, dict):
             rounds[round_path.stem] = {

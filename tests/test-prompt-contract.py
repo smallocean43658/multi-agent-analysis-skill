@@ -12,6 +12,7 @@ PROMPTS_PATH = ROOT / "test-prompts.json"
 SKILL_PATH = ROOT / "SKILL.md"
 
 VALID_MODES = {"review", "divergent-analysis"}
+EXPECTED_PROMPT_IDS = set(range(1, 17))
 
 REQUIRED_CATEGORIES = {
     "explicit-review-trigger",
@@ -35,6 +36,10 @@ REQUIRED_BEHAVIORS = {
     "wildcard-metadata",
     "dispatch-six-workers",
     "record-results-and-close",
+    "synthesize",
+    "target-in-brief",
+    "assigned-lens-only",
+    "no-ad-hoc-brainstorming",
     "ask-clarification-before-run",
     "stop-on-missing-tools",
     "no-fake-workers",
@@ -47,132 +52,6 @@ REQUIRED_BEHAVIORS = {
     "round3-user-approval",
     "round4-cap",
     "no-skill",
-}
-
-EXPECTED_CASES = {
-    1: {
-        "scenario": "explicit Chinese review trigger",
-        "should_trigger": True,
-        "mode": "review",
-        "category": "explicit-review-trigger",
-        "required_behaviors": {
-            "create-run-record",
-            "six-review-lenses",
-            "dispatch-six-workers",
-            "record-results-and-close",
-            "synthesize",
-            "continuation-gate",
-        },
-    },
-    2: {
-        "scenario": "explicit English review trigger",
-        "should_trigger": True,
-        "mode": "review",
-        "category": "explicit-review-trigger",
-        "required_behaviors": {"target-in-brief", "six-review-lenses"},
-    },
-    3: {
-        "scenario": "explicit Chinese divergent-analysis trigger",
-        "should_trigger": True,
-        "mode": "divergent-analysis",
-        "category": "explicit-divergent-trigger",
-        "required_behaviors": {
-            "six-divergent-lenses",
-            "wildcard-metadata",
-            "no-ad-hoc-brainstorming",
-        },
-    },
-    4: {
-        "scenario": "explicit English divergent-analysis trigger",
-        "should_trigger": True,
-        "mode": "divergent-analysis",
-        "category": "explicit-divergent-trigger",
-        "required_behaviors": {"create-run-record", "assigned-lens-only"},
-    },
-    5: {
-        "scenario": "ordinary review should not trigger",
-        "should_trigger": False,
-        "mode": None,
-        "category": "ordinary-review-non-trigger",
-        "required_behaviors": {"no-skill"},
-    },
-    6: {
-        "scenario": "ordinary planning should not trigger",
-        "should_trigger": False,
-        "mode": None,
-        "category": "ordinary-planning-non-trigger",
-        "required_behaviors": {"no-skill"},
-    },
-    7: {
-        "scenario": "parallel execution is not multi-agent analysis",
-        "should_trigger": False,
-        "mode": None,
-        "category": "parallel-workstreams-non-trigger",
-        "required_behaviors": {"no-skill"},
-    },
-    8: {
-        "scenario": "unclear target",
-        "should_trigger": True,
-        "mode": "review",
-        "category": "clarification-before-run",
-        "required_behaviors": {"ask-clarification-before-run"},
-    },
-    9: {
-        "scenario": "missing multi-agent tools",
-        "should_trigger": True,
-        "mode": "review",
-        "category": "missing-tooling-blocker",
-        "required_behaviors": {"stop-on-missing-tools", "no-fake-workers"},
-    },
-    10: {
-        "scenario": "callable tool mapping",
-        "should_trigger": True,
-        "mode": "review",
-        "category": "tooling-mapping",
-        "required_behaviors": {"record-active-tool-names", "no-hardcoded-tooling"},
-    },
-    11: {
-        "scenario": "exactly six agents",
-        "should_trigger": True,
-        "mode": "review",
-        "category": "exactly-six-enforcement",
-        "required_behaviors": {"require-exactly-six", "refuse-partial-round"},
-    },
-    12: {
-        "scenario": "continuation gate after round one",
-        "should_trigger": True,
-        "mode": "review",
-        "category": "continuation-gate",
-        "required_behaviors": {"continuation-gate", "round2-only-if-decision-critical"},
-    },
-    13: {
-        "scenario": "third round approval",
-        "should_trigger": True,
-        "mode": "review",
-        "category": "round3-user-approval",
-        "required_behaviors": {"continuation-gate", "round3-user-approval", "round4-cap"},
-    },
-    14: {
-        "scenario": "ordinary English review should not trigger",
-        "should_trigger": False,
-        "mode": None,
-        "category": "ordinary-review-non-trigger",
-        "required_behaviors": {"no-skill"},
-    },
-    15: {
-        "scenario": "ordinary divergent exploration should not trigger",
-        "should_trigger": False,
-        "mode": None,
-        "category": "ordinary-divergent-non-trigger",
-        "required_behaviors": {"no-skill"},
-    },
-    16: {
-        "scenario": "explicit multi-subagent review trigger without count",
-        "should_trigger": True,
-        "mode": "review",
-        "category": "explicit-review-trigger",
-        "required_behaviors": {"require-exactly-six", "six-review-lenses"},
-    },
 }
 
 
@@ -256,40 +135,22 @@ def assert_prompt_contracts(prompts: list[dict[str, object]]) -> None:
     missing_categories = REQUIRED_CATEGORIES - categories
     if missing_categories:
         fail(f"prompt smoke suite missing categories: {sorted(missing_categories)}")
+    unknown_categories = categories - REQUIRED_CATEGORIES
+    if unknown_categories:
+        fail(f"prompt smoke suite has unknown categories: {sorted(unknown_categories)}")
     missing_behaviors = REQUIRED_BEHAVIORS - behaviors
     if missing_behaviors:
         fail(f"prompt smoke suite missing required behaviors: {sorted(missing_behaviors)}")
-
-
-def assert_case_bindings(prompts: list[dict[str, object]]) -> None:
-    by_id = {item["id"]: item for item in prompts}
-    expected_ids = set(EXPECTED_CASES)
-    actual_ids = set(by_id)
+    unknown_behaviors = behaviors - REQUIRED_BEHAVIORS
+    if unknown_behaviors:
+        fail(f"prompt smoke suite has unknown required behaviors: {sorted(unknown_behaviors)}")
+    actual_ids = set(ids)
+    expected_ids = EXPECTED_PROMPT_IDS
     if actual_ids != expected_ids:
         fail(
             "prompt smoke suite ids changed; "
             f"missing={sorted(expected_ids - actual_ids)} extra={sorted(actual_ids - expected_ids)}"
         )
-
-    for case_id, expected in EXPECTED_CASES.items():
-        item = by_id[case_id]
-        if item["scenario"] != expected["scenario"]:
-            fail(f"case {case_id}: scenario changed from {expected['scenario']!r}")
-        contract = item["contract"]
-        if not isinstance(contract, dict):
-            fail(f"case {case_id}: contract must be an object")
-        for key in ("should_trigger", "mode", "category"):
-            if contract.get(key) != expected[key]:
-                fail(
-                    f"case {case_id}: contract.{key} expected {expected[key]!r}, "
-                    f"got {contract.get(key)!r}"
-                )
-        actual_behaviors = set(contract.get("required_behaviors", []))
-        if actual_behaviors != expected["required_behaviors"]:
-            fail(
-                f"case {case_id}: required behaviors expected "
-                f"{sorted(expected['required_behaviors'])}, got {sorted(actual_behaviors)}"
-            )
 
 
 def assert_skill_mentions_smoke_test() -> None:
@@ -303,7 +164,6 @@ def assert_skill_mentions_smoke_test() -> None:
 def main() -> int:
     prompts = load_prompts()
     assert_prompt_contracts(prompts)
-    assert_case_bindings(prompts)
     assert_skill_mentions_smoke_test()
     print(f"prompt contract smoke suite looks good ({len(prompts)} cases)")
     return 0

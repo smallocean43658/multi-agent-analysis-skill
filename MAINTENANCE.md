@@ -2,15 +2,18 @@
 
 This file is for maintainers. Keep user-facing explanation in `README.md` and runtime protocol in `SKILL.md`.
 
-## Current Status
-
-As of 2026-07-03:
+## Repository Status
 
 - Repository: `https://github.com/smallocean43658/multi-agent-analysis-skill.git`
 - Main branch: `main`
-- Local install path: `/home/oocc/.codex/skills/orchestrating-multi-agent-analysis`
-- Local install type: symlink to `/home/oocc/multi-agent-analysis-skill`
 - Local run records: `.superpowers/` and `.darwin/`, ignored by git
+
+## Compatibility
+
+- Python >= 3.10
+- Bash >= 4
+- macOS users may need a newer Bash than the system `/bin/bash` to run `tests/test-run-ledger.sh`.
+- Smoke tests do not exercise live multi-agent tool calls; real dispatch requires worker-capable tools in the active Codex session.
 
 ## Design Decisions
 
@@ -18,6 +21,7 @@ As of 2026-07-03:
 - `SKILL.md` is the runtime authority for agents.
 - `README.md` is the user-facing introduction, value explanation, installation guide, and usage entrypoint.
 - `MAINTENANCE.md` is the maintainer-facing record. Do not move maintenance history into README.
+- `LICENSE` permits use and modification but prohibits publishing, redistribution, sublicensing, sale, packaging, mirroring, hosting, or third-party availability without prior written permission.
 - `scripts/run-ledger` owns mechanical validation, lifecycle state transitions, and markdown rendering.
 - The main agent still owns judgment: whether to trigger, which active tools to use, how to synthesize, and whether another round is worth running.
 - Exactly six workers are required for a valid skill round. Partial rounds must stop or be explicitly marked blocked.
@@ -46,6 +50,14 @@ As of 2026-07-03:
 - Split documentation:
   - `README.md` for value, installation, usage, and validation
   - `MAINTENANCE.md` for maintainer notes and change history
+- Added a restricted `LICENSE` that allows use and modification but does not grant publishing or redistribution rights.
+- Hardened release-readiness blockers:
+  - terminal runs and rounds reject later lifecycle mutation
+  - already finalized or blocked rounds cannot be finalized again
+  - `record-synthesis` requires six completed results and six normal closes
+  - blocked finalization requires recorded lifecycle failure evidence
+  - `finalize-round` validates decision values against the current round
+  - `status` ignores sidecar files such as synthesis payload JSON
 
 ## Verification
 
@@ -54,6 +66,7 @@ Run before committing changes:
 ```bash
 python3 tests/test-prompt-contract.py
 bash tests/test-run-ledger.sh
+bash tests/test-release-metadata.sh
 bash -n tests/test-run-ledger.sh
 git diff --check
 ```
@@ -67,6 +80,7 @@ Before pushing to `main`:
 - Run the verification commands above.
 - Confirm `git status --short` contains only intentional tracked files.
 - Confirm `.superpowers/`, `.darwin/`, `__pycache__/`, and `*.pyc` are not staged.
+- Confirm `LICENSE` still matches the intended restricted use/no-publishing policy.
 - Confirm `README.md` still explains installation and usage without becoming a maintenance log.
 - Confirm `SKILL.md` still describes the live runtime protocol.
 - Confirm `MAINTENANCE.md` records maintainer-only context and change history.
