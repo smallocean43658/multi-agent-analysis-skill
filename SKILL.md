@@ -272,6 +272,15 @@ After a round, report:
 
 For Chinese user requests, answer in Chinese unless the user asks otherwise.
 
+## Validation
+
+`test-prompts.json` is the maintained prompt-corpus contract for trigger, non-trigger, mode, blocked, and continuation-gate expectations. It protects the example suite from drifting, but it does not replace live dispatch testing. After changing trigger boundaries, modes, recovery behavior, or round continuation rules, run:
+
+```bash
+python3 tests/test-prompt-contract.py
+bash tests/test-run-ledger.sh
+```
+
 ## Hard Blacklist
 
 Never do these:
