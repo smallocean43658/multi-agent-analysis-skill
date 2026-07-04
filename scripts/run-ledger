@@ -24,15 +24,7 @@ REVIEW_ROUND_ONE_LENSES = {
     "A5": "Adversarial Review",
     "A6": "Execution Friction",
 }
-DIVERGENT_ROUND_ONE_LENSES = {
-    "S1": "User Behavior & Adoption",
-    "S2": "Workflow & Operational Reality",
-    "S3": "System Mechanics & Dependencies",
-    "S4": "Failure, Abuse & Recovery",
-    "S5": "Economics, Time & Opportunity Cost",
-    "S6": "Wildcard Non-Obvious Angle",
-}
-DIVERGENT_WILDCARD_KEYS = ["wildcard_family", "why_material", "why_not_redundant"]
+DIVERGENT_ROUND_ONE_REQUIRED_KEYS = ["why_material", "expected_new_information"]
 SPAWN_STATUSES = {"spawned", "failed"}
 RESULT_STATUSES = {"completed", "failed"}
 CLOSE_STATUSES = {"closed", "failed", "cancelled"}
@@ -49,12 +41,34 @@ SYNTHESIS_LIST_FIELDS = [
     "action_list",
 ]
 SYNTHESIS_TEXT_FIELDS = [
+    "cross_review_gate_status",
     "expected_value_of_another_round",
     "next_round_decision",
     "stop_reason",
     "next_round_question",
 ]
 SYNTHESIS_DECISIONS = {"", "stop", "continue_round_2", "ask_user"}
+CROSS_REVIEW_GATE_STATUSES = {"", "clear", "needs_cross_review", "external_verification"}
+CROSS_REVIEW_TARGET_DISPOSITIONS = {
+    "pending",
+    "downgraded_non_decision_critical",
+    "external_verification",
+}
+CROSS_REVIEW_OUTCOME_STATUSES = {
+    "accepted",
+    "modified",
+    "rejected",
+    "unresolved",
+    "external-verification",
+}
+CROSS_REVIEW_TARGET_FIELDS = [
+    "target_id",
+    "source_slot",
+    "claim",
+    "why_decision_critical",
+    "disposition",
+]
+CROSS_REVIEW_OUTCOME_FIELDS = ["target_id", "status", "rationale"]
 
 
 def now_iso() -> str:
@@ -191,8 +205,25 @@ def require_text(value: Any, key: str, index: int) -> str:
     return value
 
 
+def validate_unique_lenses(assignments: list[dict[str, Any]]) -> None:
+    lenses = [item["lens"] for item in assignments]
+    if len(set(lenses)) != len(lenses):
+        raise SystemExit("assignments must use six unique lens labels")
+
+
+def validate_divergent_round_one(assignments: list[dict[str, Any]]) -> None:
+    validate_unique_lenses(assignments)
+    for index, item in enumerate(assignments, start=1):
+        for key in DIVERGENT_ROUND_ONE_REQUIRED_KEYS:
+            require_text(item.get(key), key, index)
+
+
 def validate_round_one_lenses(assignments: list[dict[str, Any]], mode: str) -> None:
-    expected = REVIEW_ROUND_ONE_LENSES if mode == "review" else DIVERGENT_ROUND_ONE_LENSES
+    if mode == "divergent-analysis":
+        validate_divergent_round_one(assignments)
+        return
+
+    expected = REVIEW_ROUND_ONE_LENSES
     expected_slots = list(expected)
     actual_slots = [item["slot"] for item in assignments]
     if actual_slots != expected_slots:
@@ -205,10 +236,6 @@ def validate_round_one_lenses(assignments: list[dict[str, Any]], mode: str) -> N
             raise SystemExit(
                 f"{item['slot']} lens must be {expected_lens!r}, got {item['lens']!r}"
             )
-    if mode == "divergent-analysis":
-        s6 = assignments[5]
-        for key in DIVERGENT_WILDCARD_KEYS:
-            require_text(s6.get(key), key, 6)
 
 
 def validate_assignments(raw: Any, mode: str, round_number: int) -> list[dict[str, Any]]:
@@ -254,6 +281,65 @@ def markdown_list(value: Any) -> str:
 def markdown_field(value: Any) -> str:
     text = non_empty_text(value)
     return text if text else "None recorded"
+
+
+def markdown_cross_review_targets(value: Any) -> str:
+    if not isinstance(value, list):
+        return "- None recorded"
+    lines: list[str] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        target_id = non_empty_text(item.get("target_id"))
+        if not target_id:
+            continue
+        lines.append(f"- Target {markdown_escape(target_id)}")
+        source_slot = non_empty_text(item.get("source_slot"))
+        if source_slot:
+            lines.append(f"  - Source slot: {markdown_escape(source_slot)}")
+        disposition = non_empty_text(item.get("disposition"))
+        if disposition:
+            lines.append(f"  - Disposition: {markdown_escape(disposition)}")
+        claim = non_empty_text(item.get("claim"))
+        if claim:
+            lines.append(f"  - Claim: {markdown_escape(claim)}")
+        why = non_empty_text(item.get("why_decision_critical"))
+        if why:
+            lines.append(f"  - Why decision critical: {markdown_escape(why)}")
+    return "\n".join(lines) if lines else "- None recorded"
+
+
+def markdown_cross_review_outcomes(value: Any) -> str:
+    if not isinstance(value, list):
+        return "- None recorded"
+    lines: list[str] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        target_id = non_empty_text(item.get("target_id"))
+        if not target_id:
+            continue
+        lines.append(f"- Outcome for {markdown_escape(target_id)}")
+        status = non_empty_text(item.get("status"))
+        if status:
+            lines.append(f"  - Status: {markdown_escape(status)}")
+        rationale = non_empty_text(item.get("rationale"))
+        if rationale:
+            lines.append(f"  - Rationale: {markdown_escape(rationale)}")
+    return "\n".join(lines) if lines else "- None recorded"
+
+
+def markdown_object_list(value: Any) -> str:
+    if not isinstance(value, list):
+        return "- None recorded"
+    lines: list[str] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        parts = [f"{key}={item[key]}" for key in sorted(item) if non_empty_text(item.get(key))]
+        if parts:
+            lines.append("- " + "; ".join(parts))
+    return "\n".join(lines) if lines else "- None recorded"
 
 
 def render_round_markdown(round_doc: dict[str, Any]) -> str:
@@ -324,6 +410,18 @@ Created: {round_doc["created_at"]}
 ### Action List
 
 {markdown_list(synthesis.get("action_list"))}
+
+### Cross Review Gate Status
+
+{markdown_field(synthesis.get("cross_review_gate_status"))}
+
+### Cross Review Targets
+
+{markdown_cross_review_targets(synthesis.get("cross_review_targets"))}
+
+### Cross Review Outcomes
+
+{markdown_cross_review_outcomes(synthesis.get("cross_review_outcomes"))}
 
 ### Expected Value Of Another Round
 
@@ -453,6 +551,50 @@ def list_has_content(value: Any) -> bool:
     return isinstance(value, list) and any(non_empty_text(item) for item in value)
 
 
+def validate_object_list(value: Any, key: str, fields: list[str]) -> list[dict[str, str]]:
+    if not isinstance(value, list):
+        raise SystemExit(f"synthesis field {key!r} must be an array")
+    output: list[dict[str, str]] = []
+    for index, item in enumerate(value, start=1):
+        if not isinstance(item, dict):
+            raise SystemExit(f"synthesis field {key!r} item {index} must be an object")
+        row: dict[str, str] = {}
+        for field in fields:
+            row[field] = require_text(item.get(field), f"{key}.{field}", index)
+        output.append(row)
+    return output
+
+
+def target_ids_from_targets(targets: Any) -> set[str]:
+    if not isinstance(targets, list):
+        return set()
+    return {str(item.get("target_id")) for item in targets if isinstance(item, dict) and item.get("target_id")}
+
+
+def pending_target_ids(targets: Any) -> set[str]:
+    if not isinstance(targets, list):
+        return set()
+    ids: set[str] = set()
+    for item in targets:
+        if not isinstance(item, dict):
+            continue
+        if item.get("disposition") == "pending":
+            ids.add(str(item.get("target_id")))
+    return ids
+
+
+def target_ids_with_disposition(targets: Any, disposition: str) -> set[str]:
+    if not isinstance(targets, list):
+        return set()
+    ids: set[str] = set()
+    for item in targets:
+        if not isinstance(item, dict):
+            continue
+        if item.get("disposition") == disposition and non_empty_text(item.get("target_id")):
+            ids.add(str(item.get("target_id")))
+    return ids
+
+
 def require_synthesis_ready(round_doc: dict[str, Any]) -> None:
     synthesis = round_doc.get("synthesis")
     if not isinstance(synthesis, dict):
@@ -485,7 +627,11 @@ def validate_synthesis_payload(raw: Any) -> dict[str, Any]:
     if not isinstance(raw, dict):
         raise SystemExit("synthesis JSON must contain an object")
 
-    allowed = set(SYNTHESIS_LIST_FIELDS) | set(SYNTHESIS_TEXT_FIELDS)
+    allowed = (
+        set(SYNTHESIS_LIST_FIELDS)
+        | set(SYNTHESIS_TEXT_FIELDS)
+        | {"cross_review_targets", "cross_review_outcomes"}
+    )
     unknown = set(raw) - allowed
     if unknown:
         raise SystemExit(f"synthesis JSON has unknown fields: {', '.join(sorted(unknown))}")
@@ -508,12 +654,34 @@ def validate_synthesis_payload(raw: Any) -> dict[str, Any]:
         value = raw[key]
         if not isinstance(value, str):
             raise SystemExit(f"synthesis field {key!r} must be a string")
+        if key == "cross_review_gate_status" and value not in CROSS_REVIEW_GATE_STATUSES:
+            raise SystemExit(
+                "synthesis field 'cross_review_gate_status' must be one of "
+                + ", ".join(sorted(CROSS_REVIEW_GATE_STATUSES))
+            )
         if key == "next_round_decision" and value not in SYNTHESIS_DECISIONS:
             raise SystemExit(
                 "synthesis field 'next_round_decision' must be one of "
                 + ", ".join(sorted(SYNTHESIS_DECISIONS))
             )
         validated[key] = value
+
+    for key in ["cross_review_targets", "cross_review_outcomes"]:
+        if key not in raw:
+            continue
+        value = raw[key]
+        if key == "cross_review_targets":
+            targets = validate_object_list(value, key, CROSS_REVIEW_TARGET_FIELDS)
+            for item in targets:
+                if item["disposition"] not in CROSS_REVIEW_TARGET_DISPOSITIONS:
+                    raise SystemExit("cross_review_targets disposition is invalid")
+            validated[key] = targets
+        else:
+            outcomes = validate_object_list(value, key, CROSS_REVIEW_OUTCOME_FIELDS)
+            for item in outcomes:
+                if item["status"] not in CROSS_REVIEW_OUTCOME_STATUSES:
+                    raise SystemExit("cross_review_outcomes status is invalid")
+            validated[key] = outcomes
 
     return validated
 
@@ -524,6 +692,38 @@ def update_state(run_dir: Path, **updates: Any) -> dict[str, Any]:
     state["updated_at"] = now_iso()
     write_json(run_dir / "state.json", state)
     return state
+
+
+def previous_round_pending_targets(run_dir: Path, round_number: int) -> set[str]:
+    if round_number != 2:
+        return set()
+    previous = load_round(run_dir, 1)
+    synthesis = previous.get("synthesis") or {}
+    if synthesis.get("cross_review_gate_status") != "needs_cross_review":
+        return set()
+    return pending_target_ids(synthesis.get("cross_review_targets"))
+
+
+def validate_cross_review_round_assignments(
+    assignments: list[dict[str, Any]], required_target_ids: set[str]
+) -> None:
+    if not required_target_ids:
+        return
+    actual_slots = [str(item.get("slot")) for item in assignments]
+    expected_slots = [f"C{index}" for index in range(1, EXPECTED_AGENTS_PER_ROUND + 1)]
+    if actual_slots != expected_slots:
+        raise SystemExit(
+            "targeted cross-review rounds must use exactly C1, C2, C3, C4, C5, C6 in order"
+        )
+    assigned: set[str] = set()
+    for index, item in enumerate(assignments, start=1):
+        target_id = require_text(item.get("target_id"), "target_id", index)
+        if target_id not in required_target_ids:
+            raise SystemExit(f"assignment {index} references unknown cross-review target_id {target_id!r}")
+        assigned.add(target_id)
+    missing = required_target_ids - assigned
+    if missing:
+        raise SystemExit("round 2 assignments do not cover cross-review target ids: " + ", ".join(sorted(missing)))
 
 
 def command_prepare_round(args: argparse.Namespace) -> int:
@@ -565,6 +765,8 @@ def command_prepare_round(args: argparse.Namespace) -> int:
         str(state.get("mode")),
         round_number,
     )
+    required_target_ids = previous_round_pending_targets(run_dir, round_number)
+    validate_cross_review_round_assignments(assignments, required_target_ids)
     created_at = now_iso()
     round_doc = {
         "version": VERSION,
@@ -582,6 +784,9 @@ def command_prepare_round(args: argparse.Namespace) -> int:
             "cannot_verify": [],
             "high_impact_low_evidence": [],
             "action_list": [],
+            "cross_review_gate_status": "",
+            "cross_review_targets": [],
+            "cross_review_outcomes": [],
             "expected_value_of_another_round": "",
             "next_round_decision": "",
             "stop_reason": "",
@@ -735,6 +940,88 @@ def command_record_synthesis(args: argparse.Namespace) -> int:
     return 0
 
 
+def validate_cross_review_finalization(
+    run_dir: Path,
+    round_doc: dict[str, Any],
+    decision: str,
+) -> None:
+    synthesis = round_doc.get("synthesis") or {}
+    gate_status = str(synthesis.get("cross_review_gate_status") or "")
+    if gate_status not in CROSS_REVIEW_GATE_STATUSES:
+        raise SystemExit("cross_review_gate_status is invalid")
+    current_pending = pending_target_ids(synthesis.get("cross_review_targets"))
+    if current_pending:
+        if gate_status != "needs_cross_review":
+            raise SystemExit(
+                "cross_review_gate_status must be needs_cross_review when pending cross-review targets exist"
+            )
+        if decision != "continue_round_2":
+            raise SystemExit(
+                "pending cross-review targets require continue_round_2 decision"
+            )
+    elif gate_status == "needs_cross_review":
+        if decision != "continue_round_2":
+            raise SystemExit("cross_review_gate_status needs_cross_review requires continue_round_2")
+        raise SystemExit(
+            "cross_review_gate_status needs_cross_review requires at least one pending target"
+        )
+
+    if decision != "stop":
+        return
+
+    current_externalized = target_ids_with_disposition(
+        synthesis.get("cross_review_targets"),
+        "external_verification",
+    )
+    if current_externalized and gate_status != "external_verification":
+        raise SystemExit(
+            "external_verification cross-review targets require cross_review_gate_status "
+            "external_verification"
+        )
+
+    outcomes = synthesis.get("cross_review_outcomes") or []
+    if isinstance(outcomes, list):
+        unresolved = [
+            str(item.get("target_id"))
+            for item in outcomes
+            if isinstance(item, dict) and item.get("status") == "unresolved"
+        ]
+        if unresolved:
+            raise SystemExit(
+                "cannot stop with unresolved cross-review outcomes: " + ", ".join(unresolved)
+            )
+        external = [
+            str(item.get("target_id"))
+            for item in outcomes
+            if isinstance(item, dict) and item.get("status") == "external-verification"
+        ]
+        if external and gate_status != "external_verification":
+            raise SystemExit("external-verification outcomes require cross_review_gate_status external_verification")
+
+    required_target_ids = previous_round_pending_targets(run_dir, int(round_doc.get("round", 0)))
+    if not required_target_ids:
+        return
+    if not isinstance(outcomes, list):
+        raise SystemExit("cannot stop without cross-review outcomes for prior pending target ids")
+    outcome_target_ids = {
+        str(item.get("target_id"))
+        for item in outcomes
+        if isinstance(item, dict) and non_empty_text(item.get("target_id"))
+    }
+    extra = outcome_target_ids - required_target_ids
+    if extra:
+        raise SystemExit(
+            "cannot stop with cross-review outcomes for unknown prior pending target ids: "
+            + ", ".join(sorted(extra))
+        )
+    missing = required_target_ids - outcome_target_ids
+    if missing:
+        raise SystemExit(
+            "cannot stop without outcomes for prior pending target ids: "
+            + ", ".join(sorted(missing))
+        )
+
+
 def command_finalize_round(args: argparse.Namespace) -> int:
     run_dir = Path(args.run_dir)
     round_doc = load_round(run_dir, args.round)
@@ -763,6 +1050,7 @@ def command_finalize_round(args: argparse.Namespace) -> int:
             )
     else:
         require_synthesis_ready(round_doc)
+        validate_cross_review_finalization(run_dir, round_doc, args.decision)
 
     round_doc["status"] = "blocked" if args.blocked else "finalized"
     round_doc.setdefault("synthesis", {})["next_round_decision"] = args.decision

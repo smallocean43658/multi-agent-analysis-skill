@@ -26,6 +26,10 @@ require_contains README.md "macOS"
 require_contains README.md "Smoke tests do not exercise live multi-agent tool calls"
 require_contains MAINTENANCE.md "Python >= 3.10"
 require_contains MAINTENANCE.md "Bash >= 4"
+require_contains README.md "target-adaptive"
+
+require_contains README.md "Cross-Review Gate"
+require_contains MAINTENANCE.md "target_id"
 
 if grep -Eq "Local install (path|type):" "$REPO_ROOT/MAINTENANCE.md"; then
   echo "MAINTENANCE.md should not contain machine-local install fields" >&2

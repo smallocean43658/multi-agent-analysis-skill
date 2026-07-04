@@ -37,16 +37,15 @@ Round 1 uses these fixed lenses:
 - Adversarial Review
 - Execution Friction
 
-`divergent-analysis` explores materially different angles for a broad direction or decision.
+`divergent-analysis` explores materially different angles for a target direction, project, product, strategy, research plan, or next-step question.
 
-Round 1 uses five fixed slots plus one constrained wildcard:
+Round 1 uses six target-adaptive lenses chosen by the main agent. Each lens records why it matters and what new information it should add. This keeps the mode useful for product work, quantitative research, architecture decisions, and other domains without locking it to a fixed taxonomy.
 
-- User Behavior & Adoption
-- Workflow & Operational Reality
-- System Mechanics & Dependencies
-- Failure, Abuse & Recovery
-- Economics, Time & Opportunity Cost
-- Wildcard Non-Obvious Angle
+## Cross-Review Gate
+
+First-round workers stay independent. If a high-impact claim appears from one lens or if lenses conflict on a decision-critical action, the claim is recorded with a `target_id`. Pending targets are cross-reviewed in a targeted second round, downgraded as non-decision-critical, or moved to external verification.
+
+Cross-reviewed claims are classified as `accepted`, `modified`, `rejected`, `unresolved`, or `external-verification`.
 
 ## What It Records
 

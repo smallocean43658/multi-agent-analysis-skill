@@ -31,9 +31,9 @@
       "should_trigger": true,
       "mode": "divergent-analysis",
       "category": "explicit-divergent-trigger",
-      "required_behaviors": ["six-divergent-lenses", "wildcard-metadata", "no-ad-hoc-brainstorming"]
+      "required_behaviors": ["six-divergent-lenses", "adaptive-divergent-lenses", "target-rationale", "no-fixed-divergent-taxonomy", "no-ad-hoc-brainstorming"]
     },
-    "expected": "The agent selects divergent-analysis mode, uses the five fixed divergent slots plus one constrained wildcard, records the wildcard family and materiality rationale, and does not replace the six-slot structure with ad hoc brainstorming."
+    "expected": "The agent selects divergent-analysis mode, prepares six target-adaptive lenses, records why each angle is materially decision-relevant and what new information it should add, and does not fall back to a fixed divergent taxonomy or ad hoc brainstorming."
   },
   {
     "id": 4,
@@ -187,8 +187,56 @@
       "should_trigger": true,
       "mode": "review",
       "category": "explicit-review-trigger",
-      "required_behaviors": ["require-exactly-six", "six-review-lenses"]
+    "required_behaviors": ["require-exactly-six", "six-review-lenses"]
     },
     "expected": "The agent selects review mode and still runs exactly six subagents even though the user did not spell out the number six."
+  },
+  {
+    "id": 17,
+    "scenario": "explicit Chinese generic multi-agent analysis trigger",
+    "prompt": "对这个量化项目的下一步方向做多子代理分析，尽量从差异大的角度出发。",
+    "contract": {
+      "should_trigger": true,
+      "mode": "divergent-analysis",
+      "category": "explicit-generic-analysis-trigger",
+      "required_behaviors": ["explicit-multi-agent-precondition", "route-generic-analysis-to-divergent", "adaptive-divergent-lenses", "dispatch-six-workers"]
+    },
+    "expected": "The agent treats 多子代理分析 as explicit multi-agent wording, selects divergent-analysis because the user asks for broad direction analysis rather than review, and prepares six target-adaptive lenses."
+  },
+  {
+    "id": 18,
+    "scenario": "ordinary Chinese analysis must not trigger",
+    "prompt": "帮我分析一下这个量化项目的下一步方向。",
+    "contract": {
+      "should_trigger": false,
+      "mode": null,
+      "category": "ordinary-analysis-non-trigger",
+      "required_behaviors": ["no-skill", "explicit-multi-agent-precondition"]
+    },
+    "expected": "The agent does not use orchestrating-multi-agent-analysis because the user did not ask for multi-agent, multi-subagent, or six-agent analysis."
+  },
+  {
+    "id": 19,
+    "scenario": "adaptive divergent analysis should avoid fixed taxonomy",
+    "prompt": "对一个产品方向做多子代理发散分析，但不要被固定行业框架限制。",
+    "contract": {
+      "should_trigger": true,
+      "mode": "divergent-analysis",
+      "category": "adaptive-divergent-lenses",
+      "required_behaviors": ["adaptive-divergent-lenses", "no-fixed-divergent-taxonomy", "target-rationale"]
+    },
+    "expected": "The agent chooses six materially different lenses fitted to the target instead of using a hardcoded five-category divergent taxonomy."
+  },
+  {
+    "id": 20,
+    "scenario": "review high-impact single-lens findings require target ids",
+    "prompt": "对当前方案做多子代理审查。第一轮如果只有对抗式审查提出新增防护，不要直接采纳，先记录 target_id 并做交叉复审。",
+    "contract": {
+      "should_trigger": true,
+      "mode": "review",
+      "category": "cross-review-gate",
+      "required_behaviors": ["cross-review-gate", "cross-review-target-ids", "targeted-cross-examination", "claim-disposition", "worker-prompt-contract"]
+    },
+    "expected": "The agent keeps round one independent, records decision-critical single-lens findings as cross-review targets with target_id, and does not finalize them until they are cross-reviewed, downgraded, or externalized."
   }
 ]

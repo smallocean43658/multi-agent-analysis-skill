@@ -1,6 +1,6 @@
 ---
 name: orchestrating-multi-agent-analysis
-description: Use when the user explicitly asks for multi-agent, multi-subagent, or six-agent review or divergent analysis of the same target, such as 多子代理审查, 多代理审查, 六代理审查, 多子代理评审, 多代理评审, 六代理评审, 多子代理发散分析, 多代理发散分析, 六代理发散分析, multi-agent review, multi-subagent review, or multi-agent divergent analysis.
+description: Use when the user explicitly asks for multi-agent, multi-subagent, or six-agent review or divergent analysis of the same target, or explicitly asks for generic multi-agent analysis that should route to divergent-analysis instead of ordinary single-agent analysis.
 ---
 
 # Orchestrating Multi-Agent Analysis
@@ -10,21 +10,22 @@ description: Use when the user explicitly asks for multi-agent, multi-subagent, 
 Use this skill to run a disciplined six-subagent analysis loop over one target artifact, decision, plan, or question. It has two modes:
 
 - `review`: stress-test a concrete plan or artifact.
-- `divergent-analysis`: expand the option space through materially different angles.
+- `divergent-analysis`: expand the option space through target-adaptive, materially different angles.
 
 The value is not statistical independence. The value is controlled decomposition, explicit disagreement, and durable evidence for what each worker was asked, what it returned, and why the main agent stopped or continued.
 
 ## Trigger Boundary
 
-Use this skill only when the user explicitly asks for multi-agent, multi-subagent, or six-agent analysis of the same target. Strong triggers include:
+Use this skill only when the user explicitly asks for multi-agent, multi-subagent, or six-agent analysis of the same target. The word `analysis` or `分析` alone is not enough.
 
-- Chinese: `多子代理审查`, `多代理审查`, `六代理审查`, `多子代理评审`, `多代理评审`, `六代理评审`
-- Chinese divergent mode: `多子代理发散分析`, `多代理发散分析`, `六代理发散分析`
-- English: `multi-agent review`, `multi-subagent review`, `six-agent review`, `multi-agent divergent analysis`
+Mode selection:
 
-Do not use for single-agent review, generic planning help, brainstorming, debugging, implementation work, pull request review, or several separate tasks in parallel unless the user explicitly requests multi-agent analysis of one target.
+- Use `review` when explicit multi-agent wording is paired with `审查`, `评审`, `review`, or a request to stress-test an existing plan, implementation proposal, spec, skill, artifact, or decision.
+- Use `divergent-analysis` when explicit multi-agent wording is paired with `分析`, `发散分析`, `analysis`, `divergent analysis`, or a request for materially different angles on a target direction, project, product, strategy, research plan, or next-step question.
+- If the user says generic `多子代理分析`, `多代理分析`, `六代理分析`, or `multi-agent analysis` without review wording, default to `divergent-analysis`.
+- If wording and target conflict, ask one concise clarification question before creating a run record.
 
-If the target artifact, decision, or question is unclear, ask one concise clarification question before creating a run record.
+Do not use for ordinary single-agent review, ordinary analysis, generic planning help, brainstorming, debugging, implementation work, pull request review, or several separate tasks in parallel unless the user explicitly requests multi-agent analysis of one target.
 
 ## Required Tooling
 
@@ -68,7 +69,7 @@ scripts/run-ledger init \
   --close-tool "$CLOSE_TOOL"
 ```
 
-The helper owns only mechanical file creation, assignment validation, lifecycle status validation, and rendering structured round JSON into markdown. The main agent still owns judgment: mode selection, lens choice after round one, synthesis, continuation decisions, and user communication.
+The helper owns only mechanical file creation, assignment validation, lifecycle status validation, and rendering structured round JSON into markdown. It validates core shape plus narrow protocol integrity: divergent rationale fields, cross-review target references, pending target coverage, outcome target ids, and terminal gate consistency. The main agent still owns judgment: mode selection, lens choice after round one, lens quality, synthesis quality, continuation decisions, and user communication.
 
 The `brief.md` file is the canonical handoff. Put the target, objective, known constraints, source paths, and any user-provided context there. Worker prompts should refer to this file instead of pasting long briefs into each worker prompt.
 
@@ -91,37 +92,45 @@ Do not replace, merge, or skip these lenses in round 1.
 
 ## Divergent-Analysis Mode
 
-Use divergent-analysis mode only when the user explicitly asks for multi-agent, multi-subagent, or six-agent divergent analysis on one target. The target may be broad angle discovery or non-obvious option exploration, but that alone is not a trigger.
+Use divergent-analysis mode only when the user explicitly asks for multi-agent, multi-subagent, or six-agent divergent analysis on one target, or uses generic explicit multi-agent analysis wording that routes here under the trigger boundary. Broad angle discovery alone is not a trigger.
 
-Round 1 must use exactly six subagents with five fixed slots plus one constrained wildcard:
+Round 1 must use exactly six target-adaptive subagents. The main agent chooses the lenses after reading the target and objective. Do not use a fixed product-centric taxonomy.
 
-| Slot | Lens | Core question |
-|---|---|---|
-| S1 | User Behavior & Adoption | Who must change behavior, and why would they adopt, resist, misunderstand, or ignore this? |
-| S2 | Workflow & Operational Reality | How does this change workflows, handoffs, ownership, rollout, training, support, and day-2 operations? |
-| S3 | System Mechanics & Dependencies | What mechanisms, interfaces, data flows, components, and dependencies must hold? |
-| S4 | Failure, Abuse & Recovery | How does this fail under stress, misuse, edge cases, or adversarial conditions, and how is it recovered? |
-| S5 | Economics, Time & Opportunity Cost | Is this worth building and operating compared with simpler alternatives or doing nothing? |
-| S6 | Wildcard Non-Obvious Angle | Which material angle is not covered by S1-S5 and could change the decision? |
+Each assignment must include:
 
-Allowed S6 wildcard families:
+- `slot`: unique slot label, normally `D1` through `D6`
+- `lens`: concise target-specific angle name
+- `question`: the exact question this worker must answer
+- `why_material`: why this angle can change understanding, priority, or decision
+- `expected_new_information`: what new information this worker should add
 
-- `Measurement & Falsifiability`
-- `Regulatory & Policy`
-- `Market & Competitive Dynamics`
-- `Historical Analogy`
-- `Ecosystem & Dependency Power`
-- `Second-Order Effects`
-- `Governance & Ownership`
-- `Reversibility & Option Value`
+The main agent should also check distinctness before dispatch: each lens should examine a different mechanism, stakeholder, evidence source, time horizon, failure mode, or value function. This distinctness check is judgment, not string matching.
 
-Before dispatching S6, record these fields in the round plan:
+## Cross-Review Gate
 
-- `wildcard_family`
-- `why_material`
-- `why_not_redundant`
+Round 1 workers stay independent. Independence surfaces raw signals; it does not make a single-lens recommendation final.
 
-If you cannot explain why S6 is materially different from S1-S5 in one sentence, use `Measurement & Falsifiability` and record the fallback reason.
+After synthesis, the main agent must identify decision-critical single-lens claims and decision-critical lens conflicts. Each unresolved item that needs reciprocal review becomes a `cross_review_target` with:
+
+- `target_id`
+- `source_slot`
+- `claim`
+- `why_decision_critical`
+- `disposition`: `pending`, `downgraded_non_decision_critical`, or `external_verification`
+
+Use `downgraded_non_decision_critical` when the claim is worth recording but does not change the current decision. Use `external_verification` when more analysis cannot resolve the claim and real tests, data, environment access, or user confirmation are required.
+
+If any target has `disposition: pending`, set `cross_review_gate_status` to `needs_cross_review` and continue to Round 2. Round 2 is targeted cross-examination. Use `C1` through `C6` slots exactly, and every assignment must reference a pending `target_id` from Round 1. Multiple workers may examine the same target through different lenses, but every pending target must receive at least one worker.
+
+Round 2 synthesis records `cross_review_outcomes` with:
+
+- `target_id`
+- `status`: `accepted`, `modified`, `rejected`, `unresolved`, or `external-verification`
+- `rationale`
+
+Do not finalize while the current synthesis still contains any `cross_review_targets` with `disposition: pending` unless `cross_review_gate_status` is `needs_cross_review` and the decision is `continue_round_2`; and `cross_review_gate_status` cannot be `needs_cross_review` without at least one pending target. Stop is allowed only when pending claims have been accepted, modified, rejected, downgraded, or externalized.
+
+If one or more cross-review outcomes are `external-verification` and no targets remain `pending` or `unresolved`, set `cross_review_gate_status` to `external_verification`. Likewise, if the current synthesis stops with one or more `cross_review_targets` marked `external_verification`, `cross_review_gate_status` must be `external_verification`.
 
 ## Round Preparation
 
@@ -144,7 +153,14 @@ scripts/run-ledger prepare-round \
   --user-approved
 ```
 
-The assignment file must be a JSON array with exactly six objects. Each object must include `slot`, `lens`, and `question`. Use `round-subagent-prompt.md` as the prompt template for each worker.
+The assignment file must be a JSON array with exactly six objects. Each object must include `slot`, `lens`, and `question`. Use `A1` through `A6` for review round 1, `D1` through `D6` for divergent-analysis round 1, and `C1` through `C6` for targeted cross-review rounds.
+
+Helper enforcement stays narrow: the helper validates exactly six assignments plus the core `slot` / `lens` / `question` shape, divergent rationale fields, targeted cross-review `target_id` references, pending target coverage, outcome target ids, and terminal gate consistency. The main agent must still carry richer protocol meaning and quality judgment in its assignment source and prompts:
+
+- divergent-analysis: `why_material`, `expected_new_information`
+- targeted cross-review: `target_id`, `source_slot`, `claim`
+
+Use `round-subagent-prompt.md` as the prompt template for each worker.
 
 If the helper rejects the assignments, fix the assignment file before dispatch. Do not dispatch a partial round.
 
@@ -212,6 +228,14 @@ After each complete round, write a synthesis into the structured fields in `roun
 - `next_round_decision`: `stop`, `continue_round_2`, or `ask_user`
 - `stop_reason` or `next_round_question`
 
+For review rounds, also record any cross-review gating fields needed by the current state:
+
+- `cross_review_gate_status`: `clear`, `needs_cross_review`, or `external_verification`
+- `cross_review_targets`: round-1 items promoted for reciprocal review
+- `cross_review_outcomes`: round-2 dispositions for each `target_id`
+
+If the round stops because evidence needs to be gathered externally, set `cross_review_gate_status` to `external_verification`.
+
 Do not average away disagreement. Preserve conflicts and name the evidence that would resolve them.
 
 For normal finalization, the helper requires non-empty `convergence`, `action_list`, and `expected_value_of_another_round`. Populate the full synthesis before calling `finalize-round`; do not use finalization as a substitute for writing the synthesis.
@@ -252,25 +276,19 @@ scripts/run-ledger finalize-round \
 
 Round 1 runs when the skill is triggered and prerequisites are satisfied.
 
-Round 2 runs automatically only when there is a decision-critical disagreement or a high-value missing perspective or evidence gap.
+Round 2 runs automatically when `cross_review_gate_status` is `needs_cross_review`.
 
 🔴 CHECKPOINT · USER APPROVAL REQUIRED: Round 3 and later require user approval before dispatch. Round 4 is the absolute cap and also requires user approval.
 
-Continue only when all of these are true:
+After targeted cross-review, continue to Round 3 or Round 4 only when a narrower unresolved analysis question is still decision-critical, six fresh assignments are still materially non-duplicative, and the user explicitly approves the next round.
 
-- The unresolved question is decision-level, not just useful detail.
-- The next round has one narrower question.
-- Six new assignments can be non-duplicative.
-- At least four of the six assignments have clear expected new information compared with the previous round.
-- The next round can plausibly change the recommendation, priority, or risk judgment.
-- No user-approval threshold has fired.
+Stop only when:
 
-Stop when any of these are true:
+- no pending cross-review target remains, and
+- no cross-review outcome is `unresolved`, and
+- remaining work is implementation, user choice, or external verification rather than more analysis.
 
-- There is an actionable recommendation and no unresolved decision-critical disagreement.
-- Remaining work is implementation or external verification, not analysis.
-- Another six-agent assignment set would be filler.
-- The tool lifecycle is incomplete and the missing result would affect synthesis integrity.
+If the tool lifecycle is incomplete and the missing result would affect synthesis integrity, do not continue analysis. Record the blocker and stop through the blocked-round path instead of pretending the gate is satisfied.
 
 ## User-Facing Reporting
 
@@ -297,19 +315,23 @@ bash tests/test-run-ledger.sh
 Never do these:
 
 - Do not trigger this skill for ordinary review, planning, debugging, brainstorming, or PR review without explicit multi-agent wording.
+- Do not trigger this skill for ordinary `analysis` or `分析` wording without explicit multi-agent wording.
 - Do not run fewer than six workers while claiming this skill was used.
 - Do not synthesize or normally finalize a round before all spawned workers have completed result records and normal close records.
 - Do not finalize a blocked round while any spawned worker is still open.
 - Do not record a worker result or successful close status before its spawn is recorded in `round-N.json`.
 - Do not continue to Round 3 or Round 4 without user approval.
+- Do not stop while `cross_review_gate_status` is `needs_cross_review` or while any cross-review outcome is `unresolved`.
 - Do not replace a failed worker silently; report the blocked lifecycle and ask before restarting the round.
 
 ## Common Mistakes
 
 - Triggering on ordinary review language without explicit multi-agent wording.
+- Triggering on ordinary `analysis` or `分析` language without explicit multi-agent wording.
 - Running fewer than six workers while still claiming this skill was used.
 - Pasting large briefs into every worker prompt instead of using `brief.md`.
-- Continuing into round 2 because more analysis is possible rather than decision-changing.
+- Reusing a fixed divergent taxonomy instead of choosing target-adaptive lenses.
+- Skipping the Cross-Review Gate when a single lens makes a decision-critical claim.
 - Starting Round 3 without user approval.
 - Failing to close workers after collecting results.
 - Hiding worker failures in the synthesis.

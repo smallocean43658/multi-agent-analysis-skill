@@ -131,6 +131,26 @@ PY
     --synthesis "$synthesis_file" >/dev/null
 }
 
+create_completed_cross_review_round() {
+  cross_root="$tmpdir/.superpowers/cross-review"
+  cross_run="$("$LEDGER" init \
+    --root "$cross_root" \
+    --mode review \
+    --target "plan" \
+    --objective "Review cross-review gate" \
+    --spawn-tool spawn \
+    --wait-tool wait \
+    --close-tool close \
+    --title "Cross review gate")"
+
+  "$LEDGER" prepare-round --run-dir "$cross_run" --round 1 --assignments "$six" >/dev/null
+  for slot in A1 A2 A3 A4 A5 A6; do
+    "$LEDGER" record-spawn --run-dir "$cross_run" --round 1 --slot "$slot" --agent-id "agent-$slot" --status spawned >/dev/null
+    "$LEDGER" record-result --run-dir "$cross_run" --round 1 --slot "$slot" --status completed --summary "$slot result" >/dev/null
+    "$LEDGER" record-close --run-dir "$cross_run" --round 1 --slot "$slot" --status closed >/dev/null
+  done
+}
+
 "$LEDGER" prepare-round \
   --run-dir "$run_dir" \
   --round 1 \
@@ -871,45 +891,415 @@ divergent_run="$("$LEDGER" init \
   --root "$divergent_root" \
   --mode divergent-analysis \
   --target docs/plan.md \
-  --objective "Find non-obvious decision angles" \
+  --objective "Explore target-adaptive next directions" \
   --spawn-tool spawn_agent \
   --wait-tool wait_agent \
   --close-tool close_agent \
-  --title "Divergent plan analysis")"
+  --title "Adaptive divergent")"
 
-divergent_bad="$tmpdir/divergent-bad.json"
-cat >"$divergent_bad" <<'JSON'
+adaptive_missing_rationale="$tmpdir/adaptive-missing-rationale.json"
+cat >"$adaptive_missing_rationale" <<'JSON'
 [
-  {"slot": "S1", "lens": "User Behavior & Adoption", "question": "Who adopts?"},
-  {"slot": "S2", "lens": "Workflow & Operational Reality", "question": "What workflow changes?"},
-  {"slot": "S3", "lens": "System Mechanics & Dependencies", "question": "What mechanisms hold?"},
-  {"slot": "S4", "lens": "Failure, Abuse & Recovery", "question": "How can this fail?"},
-  {"slot": "S5", "lens": "Economics, Time & Opportunity Cost", "question": "Is this worth it?"},
-  {"slot": "S6", "lens": "Wildcard Non-Obvious Angle", "question": "What else matters?"}
+  {"slot": "D1", "lens": "Regime Detection", "question": "Which market regimes matter?"},
+  {"slot": "D2", "lens": "Data Leakage Risk", "question": "Where can leakage enter?"},
+  {"slot": "D3", "lens": "Execution Reality", "question": "Can this trade after costs?"},
+  {"slot": "D4", "lens": "Research Throughput", "question": "What speeds up iteration?"},
+  {"slot": "D5", "lens": "Overfitting Risk", "question": "Where is the strategy overfit?"},
+  {"slot": "D6", "lens": "Portfolio Fit", "question": "Does this diversify existing bets?"}
 ]
 JSON
 
-if "$LEDGER" prepare-round --run-dir "$divergent_run" --round 1 --assignments "$divergent_bad" >/dev/null 2>&1; then
-  echo "divergent S6 should require wildcard metadata" >&2
+if "$LEDGER" prepare-round --run-dir "$divergent_run" --round 1 --assignments "$adaptive_missing_rationale" >/dev/null 2>&1; then
+  echo "divergent round 1 should require why_material and expected_new_information" >&2
   exit 1
 fi
 
 divergent_good="$tmpdir/divergent-good.json"
-python3 - "$divergent_bad" "$divergent_good" <<'PY'
-import json
-import sys
-from pathlib import Path
-
-assignments = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
-assignments[5]["wildcard_family"] = "Measurement & Falsifiability"
-assignments[5]["why_material"] = "The decision needs falsifiable success criteria."
-assignments[5]["why_not_redundant"] = "No fixed slot directly tests measurement quality."
-Path(sys.argv[2]).write_text(json.dumps(assignments, indent=2) + "\n", encoding="utf-8")
-PY
+cat >"$divergent_good" <<'JSON'
+[
+  {"slot": "D1", "lens": "Regime Detection", "question": "Which market regimes matter?", "why_material": "Regime selection can change the research path.", "expected_new_information": "Regimes worth isolating before model work."},
+  {"slot": "D2", "lens": "Data Leakage Risk", "question": "Where can leakage enter?", "why_material": "Leakage can invalidate apparent alpha.", "expected_new_information": "Leakage paths and controls needed before research continues."},
+  {"slot": "D3", "lens": "Execution Reality", "question": "Can this trade after costs?", "why_material": "Backtests can fail after fees, slippage, latency, and capacity.", "expected_new_information": "Execution constraints that change feasibility."},
+  {"slot": "D4", "lens": "Research Throughput", "question": "What speeds up iteration?", "why_material": "The next direction depends on how quickly evidence can be produced.", "expected_new_information": "Bottlenecks in data, compute, labeling, and review loops."},
+  {"slot": "D5", "lens": "Overfitting Risk", "question": "Where is the strategy overfit?", "why_material": "Overfitting determines whether more search is useful.", "expected_new_information": "Falsification tests for fragile alpha."},
+  {"slot": "D6", "lens": "Portfolio Fit", "question": "Does this diversify existing bets?", "why_material": "A weaker standalone strategy can still be valuable if diversifying.", "expected_new_information": "Correlation and allocation questions for the next step."}
+]
+JSON
 
 "$LEDGER" prepare-round \
   --run-dir "$divergent_run" \
   --round 1 \
   --assignments "$divergent_good" >/dev/null
+
+create_completed_cross_review_round
+
+needs_cross_review="$tmpdir/needs-cross-review.json"
+cat >"$needs_cross_review" <<'JSON'
+{
+  "convergence": ["The base plan is useful."],
+  "disagreement": ["A5 wants a guardrail while A2 worries about complexity."],
+  "critical_disagreements": ["Whether the guardrail should be mandatory."],
+  "cannot_verify": [],
+  "high_impact_low_evidence": [],
+  "action_list": ["Cross-review the guardrail before accepting it."],
+  "cross_review_gate_status": "needs_cross_review",
+  "cross_review_targets": [
+    {"target_id": "cr-guardrail", "source_slot": "A5", "claim": "Add a mandatory guardrail before every run.", "why_decision_critical": "It changes every user workflow.", "disposition": "pending"}
+  ],
+  "cross_review_outcomes": [],
+  "expected_value_of_another_round": "High because the guardrail decision can change implementation scope.",
+  "next_round_decision": "continue_round_2",
+  "stop_reason": "",
+  "next_round_question": "Cross-review cr-guardrail."
+}
+JSON
+
+"$LEDGER" record-synthesis --run-dir "$cross_run" --round 1 --synthesis "$needs_cross_review" >/dev/null
+
+if "$LEDGER" finalize-round --run-dir "$cross_run" --round 1 --decision stop --summary "Stop with pending target" >/dev/null 2>&1; then
+  echo "finalize-round should reject stop while cross_review_gate_status needs_cross_review" >&2
+  exit 1
+fi
+
+"$LEDGER" finalize-round --run-dir "$cross_run" --round 1 --decision continue_round_2 --summary "Cross-review cr-guardrail." >/dev/null
+
+create_completed_cross_review_round
+pending_but_clear="$tmpdir/pending-but-clear.json"
+cat >"$pending_but_clear" <<'JSON'
+{
+  "convergence": ["The base plan is useful."],
+  "disagreement": ["A5 proposes a guardrail that changes scope."],
+  "critical_disagreements": ["Whether the guardrail is required."],
+  "cannot_verify": [],
+  "high_impact_low_evidence": [],
+  "action_list": ["Do not finalize before the guardrail is cross-reviewed."],
+  "cross_review_gate_status": "clear",
+  "cross_review_targets": [
+    {"target_id": "cr-guardrail", "source_slot": "A5", "claim": "Add a mandatory guardrail before every run.", "why_decision_critical": "It changes every user workflow.", "disposition": "pending"}
+  ],
+  "cross_review_outcomes": [],
+  "expected_value_of_another_round": "High because the guardrail decision changes implementation scope.",
+  "next_round_decision": "stop",
+  "stop_reason": "",
+  "next_round_question": ""
+}
+JSON
+
+"$LEDGER" record-synthesis --run-dir "$cross_run" --round 1 --synthesis "$pending_but_clear" >/dev/null
+
+if "$LEDGER" finalize-round --run-dir "$cross_run" --round 1 --decision stop --summary "Stop with pending target despite clear gate" >/dev/null 2>&1; then
+  echo "finalize-round should reject stop while current synthesis still has pending cross-review targets" >&2
+  exit 1
+fi
+
+if "$LEDGER" finalize-round --run-dir "$cross_run" --round 1 --decision continue_round_2 --summary "Continue with pending target despite clear gate" >/dev/null 2>&1; then
+  echo "finalize-round should reject continue_round_2 while current synthesis has pending cross-review targets and clear gate" >&2
+  exit 1
+fi
+
+if "$LEDGER" prepare-round --run-dir "$cross_run" --round 2 --assignments "$six" >/dev/null 2>&1; then
+  echo "generic round-2 preparation should not be possible after invalid cross-review finalize decision" >&2
+  exit 1
+fi
+
+create_completed_cross_review_round
+needs_cross_review_multi="$tmpdir/needs-cross-review-multi-targets.json"
+cat >"$needs_cross_review_multi" <<'JSON'
+{
+  "convergence": ["Both suggestions are useful."],
+  "disagreement": ["The team disagrees on safety versus speed."],
+  "critical_disagreements": ["Guardrail scope changes both rollout risk and compliance."],
+  "cannot_verify": [],
+  "high_impact_low_evidence": [],
+  "action_list": [
+    "Cross-review both claims before execution.",
+    "Prioritize evidence that closes the highest-risk claim."
+  ],
+  "cross_review_gate_status": "needs_cross_review",
+  "cross_review_targets": [
+    {
+      "target_id": "cr-guardrail",
+      "source_slot": "A5",
+      "claim": "Add a mandatory guardrail before every run.",
+      "why_decision_critical": "Guardrails are non-negotiable in regulated environments.",
+      "disposition": "pending"
+    },
+    {
+      "target_id": "cr-rollback-plan",
+      "source_slot": "A2",
+      "claim": "Require explicit rollback plan before deployment.",
+      "why_decision_critical": "Rollback coverage can prevent user-facing incidents.",
+      "disposition": "pending"
+    }
+  ],
+  "cross_review_outcomes": [],
+  "expected_value_of_another_round": "High because both claims alter risk posture.",
+  "next_round_decision": "continue_round_2",
+  "stop_reason": "",
+  "next_round_question": "Cross-review both claims."
+}
+JSON
+
+"$LEDGER" record-synthesis --run-dir "$cross_run" --round 1 --synthesis "$needs_cross_review_multi" >/dev/null
+
+if "$LEDGER" finalize-round --run-dir "$cross_run" --round 1 --decision stop --summary "Stop while pending targets remain." >/dev/null 2>&1; then
+  echo "finalize-round should reject stop while cross_review_gate_status needs_cross_review" >&2
+  exit 1
+fi
+
+"$LEDGER" finalize-round --run-dir "$cross_run" --round 1 --decision continue_round_2 --summary "Cross-review both claims." >/dev/null
+
+round2_partial_targets="$tmpdir/round2-partial-targets.json"
+cat >"$round2_partial_targets" <<'JSON'
+[
+  {"slot": "C1", "lens": "Occam's Razor", "question": "Is the guardrail overbuilt?", "target_id": "cr-guardrail"},
+  {"slot": "C2", "lens": "Expected Cost Optimality", "question": "Is the cost worth it?", "target_id": "cr-guardrail"},
+  {"slot": "C3", "lens": "Execution Friction", "question": "Will users follow it?", "target_id": "cr-guardrail"},
+  {"slot": "C4", "lens": "Adversarial Review", "question": "What fails without it?", "target_id": "cr-guardrail"},
+  {"slot": "C5", "lens": "Bounded Bayesian", "question": "What evidence changes confidence?", "target_id": "cr-guardrail"},
+  {"slot": "C6", "lens": "Scope Control", "question": "What smaller version preserves benefit?", "target_id": "cr-guardrail"}
+]
+JSON
+
+if "$LEDGER" prepare-round --run-dir "$cross_run" --round 2 --assignments "$round2_partial_targets" >/dev/null 2>&1; then
+  echo "prepare-round should reject partial coverage of pending cross-review target ids" >&2
+  exit 1
+fi
+
+create_completed_cross_review_round
+"$LEDGER" record-synthesis --run-dir "$cross_run" --round 1 --synthesis "$needs_cross_review" >/dev/null
+"$LEDGER" finalize-round --run-dir "$cross_run" --round 1 --decision continue_round_2 --summary "Cross-review cr-guardrail." >/dev/null
+
+round2_wrong_slots="$tmpdir/round2-wrong-slots.json"
+cat >"$round2_wrong_slots" <<'JSON'
+[
+  {"slot": "B1", "lens": "Occam's Razor", "question": "Is the guardrail overbuilt?", "target_id": "cr-guardrail"},
+  {"slot": "B2", "lens": "Expected Cost Optimality", "question": "Is the cost worth it?", "target_id": "cr-guardrail"},
+  {"slot": "B3", "lens": "Execution Friction", "question": "Will users follow it?", "target_id": "cr-guardrail"},
+  {"slot": "B4", "lens": "Adversarial Review", "question": "What fails without it?", "target_id": "cr-guardrail"},
+  {"slot": "B5", "lens": "Bounded Bayesian", "question": "What evidence changes confidence?", "target_id": "cr-guardrail"},
+  {"slot": "B6", "lens": "Scope Control", "question": "What smaller version works?", "target_id": "cr-guardrail"}
+]
+JSON
+
+if "$LEDGER" prepare-round --run-dir "$cross_run" --round 2 --assignments "$round2_wrong_slots" >/dev/null 2>&1; then
+  echo "round 2 targeted cross-review should require C1-C6 slots when prior pending targets exist" >&2
+  exit 1
+fi
+
+round2_unknown_target="$tmpdir/round2-unknown-target.json"
+cat >"$round2_unknown_target" <<'JSON'
+[
+  {"slot": "C1", "lens": "Occam's Razor", "question": "Is the guardrail overbuilt?", "target_id": "cr-other"},
+  {"slot": "C2", "lens": "Expected Cost Optimality", "question": "Is the cost worth it?", "target_id": "cr-other"},
+  {"slot": "C3", "lens": "Execution Friction", "question": "Will users follow it?", "target_id": "cr-other"},
+  {"slot": "C4", "lens": "Adversarial Review", "question": "What fails without it?", "target_id": "cr-other"},
+  {"slot": "C5", "lens": "Bounded Bayesian", "question": "What evidence changes confidence?", "target_id": "cr-other"},
+  {"slot": "C6", "lens": "Scope Control", "question": "What smaller version works?", "target_id": "cr-other"}
+]
+JSON
+
+if "$LEDGER" prepare-round --run-dir "$cross_run" --round 2 --assignments "$round2_unknown_target" >/dev/null 2>&1; then
+  echo "round 2 should reject unknown cross-review target ids" >&2
+  exit 1
+fi
+
+round2_good="$tmpdir/round2-good.json"
+cat >"$round2_good" <<'JSON'
+[
+  {"slot": "C1", "lens": "Occam's Razor", "question": "Is the guardrail overbuilt?", "target_id": "cr-guardrail"},
+  {"slot": "C2", "lens": "Expected Cost Optimality", "question": "Is the cost worth it?", "target_id": "cr-guardrail"},
+  {"slot": "C3", "lens": "Execution Friction", "question": "Will users follow it?", "target_id": "cr-guardrail"},
+  {"slot": "C4", "lens": "Adversarial Review", "question": "What fails without it?", "target_id": "cr-guardrail"},
+  {"slot": "C5", "lens": "Bounded Bayesian", "question": "What evidence changes confidence?", "target_id": "cr-guardrail"},
+  {"slot": "C6", "lens": "Scope Control", "question": "What smaller version preserves benefit?", "target_id": "cr-guardrail"}
+]
+JSON
+
+"$LEDGER" prepare-round --run-dir "$cross_run" --round 2 --assignments "$round2_good" >/dev/null
+
+for slot in C1 C2 C3 C4 C5 C6; do
+  "$LEDGER" record-spawn --run-dir "$cross_run" --round 2 --slot "$slot" --agent-id "agent-$slot" --status spawned >/dev/null
+  "$LEDGER" record-result --run-dir "$cross_run" --round 2 --slot "$slot" --status completed --summary "$slot result" >/dev/null
+  "$LEDGER" record-close --run-dir "$cross_run" --round 2 --slot "$slot" --status closed >/dev/null
+done
+
+unresolved_outcome="$tmpdir/unresolved-outcome.json"
+cat >"$unresolved_outcome" <<'JSON'
+{
+  "convergence": ["The guardrail remains disputed."],
+  "disagreement": ["Cost and risk remain unresolved."],
+  "critical_disagreements": ["The guardrail decision still changes scope."],
+  "cannot_verify": [],
+  "high_impact_low_evidence": [],
+  "action_list": ["Ask user or gather evidence before implementation."],
+  "cross_review_gate_status": "clear",
+  "cross_review_targets": [],
+  "cross_review_outcomes": [
+    {"target_id": "cr-guardrail", "status": "unresolved", "rationale": "Reviewers still disagree on mandatory scope."}
+  ],
+  "expected_value_of_another_round": "Low without new evidence.",
+  "next_round_decision": "stop",
+  "stop_reason": "Attempted stop with unresolved outcome.",
+  "next_round_question": ""
+}
+JSON
+
+"$LEDGER" record-synthesis --run-dir "$cross_run" --round 2 --synthesis "$unresolved_outcome" >/dev/null
+
+if "$LEDGER" finalize-round --run-dir "$cross_run" --round 2 --decision stop --summary "Stop unresolved" >/dev/null 2>&1; then
+  echo "finalize-round should reject stop with unresolved cross-review outcome" >&2
+  exit 1
+fi
+
+missing_outcome="$tmpdir/missing-outcome.json"
+cat >"$missing_outcome" <<'JSON'
+{
+  "convergence": ["A lighter-weight safeguard is still possible."],
+  "disagreement": ["The mandatory guardrail is still debated."],
+  "critical_disagreements": ["The scope effect remains important."],
+  "cannot_verify": [],
+  "high_impact_low_evidence": [],
+  "action_list": ["Gather one more evidence point before implementation."],
+  "cross_review_gate_status": "clear",
+  "cross_review_targets": [],
+  "cross_review_outcomes": [],
+  "expected_value_of_another_round": "Low now that the team can escalate directly.",
+  "next_round_decision": "stop",
+  "stop_reason": "",
+  "next_round_question": ""
+}
+JSON
+
+"$LEDGER" record-synthesis --run-dir "$cross_run" --round 2 --synthesis "$missing_outcome" >/dev/null
+
+if "$LEDGER" finalize-round --run-dir "$cross_run" --round 2 --decision stop --summary "Stop with missing outcome" >/dev/null 2>&1; then
+  echo "finalize-round should reject stop when prior pending target_ids have no outcomes" >&2
+  exit 1
+fi
+
+extra_outcome="$tmpdir/extra-outcome.json"
+cat >"$extra_outcome" <<'JSON'
+{
+  "convergence": ["A lighter-weight safeguard is enough."],
+  "disagreement": [],
+  "critical_disagreements": [],
+  "cannot_verify": [],
+  "high_impact_low_evidence": [],
+  "action_list": ["Implement the checklist version."],
+  "cross_review_gate_status": "clear",
+  "cross_review_targets": [],
+  "cross_review_outcomes": [
+    {"target_id": "cr-guardrail", "status": "modified", "rationale": "Use a lightweight checklist instead of a mandatory guardrail."},
+    {"target_id": "cr-extra", "status": "accepted", "rationale": "Unexpected extra target should not be accepted here."}
+  ],
+  "expected_value_of_another_round": "Low once the mandatory version is rejected.",
+  "next_round_decision": "stop",
+  "stop_reason": "",
+  "next_round_question": ""
+}
+JSON
+
+"$LEDGER" record-synthesis --run-dir "$cross_run" --round 2 --synthesis "$extra_outcome" >/dev/null
+
+if "$LEDGER" finalize-round --run-dir "$cross_run" --round 2 --decision stop --summary "Stop with extra outcome target" >/dev/null 2>&1; then
+  echo "finalize-round should reject extra cross-review outcome target ids" >&2
+  exit 1
+fi
+
+resolved_outcome="$tmpdir/resolved-outcome.json"
+cat >"$resolved_outcome" <<'JSON'
+{
+  "convergence": ["A lighter-weight safeguard is enough."],
+  "disagreement": [],
+  "critical_disagreements": [],
+  "cannot_verify": [],
+  "high_impact_low_evidence": [],
+  "action_list": ["Implement the checklist version."],
+  "cross_review_gate_status": "clear",
+  "cross_review_targets": [
+    {"target_id": "cr-guardrail", "source_slot": "A5", "claim": "Add a mandatory guardrail before every run.", "why_decision_critical": "It changes every user workflow.", "disposition": "downgraded_non_decision_critical"}
+  ],
+  "cross_review_outcomes": [
+    {"target_id": "cr-guardrail", "status": "modified", "rationale": "Use a lightweight checklist instead of a mandatory guardrail."}
+  ],
+  "expected_value_of_another_round": "Low once the mandatory version is rejected.",
+  "next_round_decision": "stop",
+  "stop_reason": "",
+  "next_round_question": ""
+}
+JSON
+
+"$LEDGER" record-synthesis --run-dir "$cross_run" --round 2 --synthesis "$resolved_outcome" >/dev/null
+"$LEDGER" finalize-round --run-dir "$cross_run" --round 2 --decision stop --summary "Stop with modified outcome" >/dev/null
+
+if ! grep -q "Cross Review Gate Status" "$cross_run/round-02.md"; then
+  echo "round markdown should render cross review gate status" >&2
+  exit 1
+fi
+if ! grep -q "Target cr-guardrail" "$cross_run/round-02.md"; then
+  echo "round markdown should render cross review targets with identifiers" >&2
+  exit 1
+fi
+if ! grep -q "Outcome for cr-guardrail" "$cross_run/round-02.md"; then
+  echo "round markdown should render cross review outcomes with distinct context" >&2
+  exit 1
+fi
+
+create_completed_cross_review_round
+externalized_target_clear_gate="$tmpdir/externalized-target-clear-gate.json"
+cat >"$externalized_target_clear_gate" <<'JSON'
+{
+  "convergence": ["External verification is required before acting."],
+  "disagreement": ["The team cannot settle the guardrail claim internally."],
+  "critical_disagreements": ["The claim remains decision-critical without external evidence."],
+  "cannot_verify": ["Production data needed to validate the guardrail claim."],
+  "high_impact_low_evidence": ["The guardrail could change every user workflow."],
+  "action_list": ["Escalate the guardrail claim to external verification."],
+  "cross_review_gate_status": "clear",
+  "cross_review_targets": [
+    {"target_id": "cr-guardrail", "source_slot": "A5", "claim": "Add a mandatory guardrail before every run.", "why_decision_critical": "It changes every user workflow.", "disposition": "external_verification"}
+  ],
+  "cross_review_outcomes": [],
+  "expected_value_of_another_round": "Low without external evidence.",
+  "next_round_decision": "stop",
+  "stop_reason": "",
+  "next_round_question": ""
+}
+JSON
+
+"$LEDGER" record-synthesis --run-dir "$cross_run" --round 1 --synthesis "$externalized_target_clear_gate" >/dev/null
+
+if "$LEDGER" finalize-round --run-dir "$cross_run" --round 1 --decision stop --summary "Stop with externalized target but clear gate" >/dev/null 2>&1; then
+  echo "finalize-round should require external_verification gate status when stopping with externalized cross-review targets" >&2
+  exit 1
+fi
+
+duplicate_lens="$tmpdir/adaptive-duplicate-lens.json"
+python3 - "$divergent_good" "$duplicate_lens" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+src, dst = sys.argv[1], sys.argv[2]
+payload = json.load(open(src, encoding="utf-8"))
+payload[1]["lens"] = payload[0]["lens"]
+json.dump(payload, open(dst, "w", encoding="utf-8"), indent=2)
+PY
+
+duplicate_run="$("$LEDGER" init \
+  --root "$tmpdir/.superpowers/duplicate-lens" \
+  --mode divergent-analysis \
+  --target docs/plan.md \
+  --objective "Reject duplicated lenses" \
+  --spawn-tool spawn_agent \
+  --wait-tool wait_agent \
+  --close-tool close_agent \
+  --title "Duplicate lens")"
+
+if "$LEDGER" prepare-round --run-dir "$duplicate_run" --round 1 --assignments "$duplicate_lens" >/dev/null 2>&1; then
+  echo "divergent round 1 should reject duplicate lens labels" >&2
+  exit 1
+fi
 
 echo "orchestrating-multi-agent-analysis ledger helper looks good"

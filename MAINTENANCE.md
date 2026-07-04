@@ -28,6 +28,21 @@ This file is for maintainers. Keep user-facing explanation in `README.md` and ru
 
 ## Change Log
 
+### 2026-07-04
+
+- Changed divergent-analysis round-one lenses from fixed categories to target-adaptive lenses.
+- Preserved explicit multi-agent wording as the trigger precondition; ordinary analysis requests remain non-triggers.
+- Added claim-level `target_id` tracking for Cross-Review Gate targets and outcomes.
+- Added markdown rendering expectations for cross-review gate state, targets, and outcomes.
+- Hardened Cross-Review Gate finalization invariants:
+  - pending targets require `cross_review_gate_status: needs_cross_review` and `continue_round_2`
+  - `needs_cross_review` requires at least one pending target
+  - targeted cross-review rounds require `C1` through `C6`
+  - round-two outcomes reject missing or extra `target_id` values
+  - unresolved or externally verified outcomes cannot be finalized under the wrong gate state
+- Added the implementation plan under `docs/superpowers/plans/2026-07-04-adaptive-divergent-cross-review.md`.
+- Final independent review found no Critical or Important issues after the pending-target invariant fix; remaining note is a non-blocking coverage gap for `needs_cross_review` with zero pending targets.
+
 ### 2026-07-03
 
 - Created the independent `multi-agent-analysis-skill` repository.
@@ -67,11 +82,13 @@ Run before committing changes:
 python3 tests/test-prompt-contract.py
 bash tests/test-run-ledger.sh
 bash tests/test-release-metadata.sh
+python3 -m py_compile scripts/run-ledger tests/test-prompt-contract.py
 bash -n tests/test-run-ledger.sh
+bash -n tests/test-release-metadata.sh
 git diff --check
 ```
 
-Run `python3 -m py_compile scripts/run-ledger tests/test-prompt-contract.py` when touching Python code, then remove generated `__pycache__/` directories before committing.
+Remove generated `__pycache__/` directories before committing after Python compilation checks.
 
 ## Release Checklist
 

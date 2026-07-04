@@ -4,25 +4,32 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
 PROMPTS_PATH = ROOT / "test-prompts.json"
 SKILL_PATH = ROOT / "SKILL.md"
+WORKER_PROMPT_PATH = ROOT / "round-subagent-prompt.md"
+README_PATH = ROOT / "README.md"
 
 VALID_MODES = {"review", "divergent-analysis"}
-EXPECTED_PROMPT_IDS = set(range(1, 17))
+EXPECTED_PROMPT_IDS = set(range(1, 21))
 
 REQUIRED_CATEGORIES = {
     "explicit-review-trigger",
     "explicit-divergent-trigger",
+    "explicit-generic-analysis-trigger",
     "ordinary-review-non-trigger",
     "ordinary-planning-non-trigger",
+    "ordinary-analysis-non-trigger",
     "parallel-workstreams-non-trigger",
     "clarification-before-run",
     "missing-tooling-blocker",
     "tooling-mapping",
+    "adaptive-divergent-lenses",
+    "cross-review-gate",
     "exactly-six-enforcement",
     "continuation-gate",
     "round3-user-approval",
@@ -33,7 +40,16 @@ REQUIRED_BEHAVIORS = {
     "create-run-record",
     "six-review-lenses",
     "six-divergent-lenses",
-    "wildcard-metadata",
+    "explicit-multi-agent-precondition",
+    "route-generic-analysis-to-divergent",
+    "adaptive-divergent-lenses",
+    "no-fixed-divergent-taxonomy",
+    "target-rationale",
+    "cross-review-gate",
+    "cross-review-target-ids",
+    "targeted-cross-examination",
+    "claim-disposition",
+    "worker-prompt-contract",
     "dispatch-six-workers",
     "record-results-and-close",
     "synthesize",
@@ -155,16 +171,70 @@ def assert_prompt_contracts(prompts: list[dict[str, object]]) -> None:
 
 def assert_skill_mentions_smoke_test() -> None:
     skill_text = SKILL_PATH.read_text(encoding="utf-8")
-    if "tests/test-prompt-contract.py" not in skill_text:
-        fail("SKILL.md must document the prompt contract smoke test")
-    if "test-prompts.json" not in skill_text:
-        fail("SKILL.md must mention test-prompts.json as a maintained contract")
+    required_skill_terms = [
+        "explicit multi-agent",
+        "target-adaptive",
+        "Cross-Review Gate",
+        "target_id",
+        "downgraded_non_decision_critical",
+        "external-verification",
+        "external_verification",
+    ]
+    for term in required_skill_terms:
+        if term not in skill_text:
+            fail(f"SKILL.md must document {term!r}")
+
+    if not re.search(
+        r"cross_review_gate_status[\s\S]{0,120}external_verification",
+        skill_text,
+    ):
+        fail(
+            "SKILL.md must include `cross_review_gate_status` with `external_verification` "
+            "for external-verification outcomes"
+        )
+
+
+def assert_worker_prompt_mentions_contract() -> None:
+    prompt_text = WORKER_PROMPT_PATH.read_text(encoding="utf-8")
+    required_terms = [
+        "A1-A6",
+        "D1-D6",
+        "C1-C6",
+        "why_material",
+        "expected_new_information",
+        "target_id",
+        "claim",
+        "accepted",
+        "modified",
+        "rejected",
+        "unresolved",
+        "external-verification",
+    ]
+    for term in required_terms:
+        if term not in prompt_text:
+            fail(f"round-subagent-prompt.md must document {term!r}")
+
+    if "source_claim" in prompt_text:
+        fail("round-subagent-prompt.md must use `claim` instead of `source_claim`")
+
+    if "Return for A1-A6 and D1-D6" not in prompt_text:
+        fail(
+            "round-subagent-prompt.md must explicitly define broad return contract for "
+            "A1-A6/D1-D6 and not reuse the same contract for C1-C6"
+        )
+
+    if "Return for C1-C6" not in prompt_text:
+        fail(
+            "round-subagent-prompt.md must include a dedicated minimal return contract "
+            "for C1-C6 targeted cross-review"
+        )
 
 
 def main() -> int:
     prompts = load_prompts()
     assert_prompt_contracts(prompts)
     assert_skill_mentions_smoke_test()
+    assert_worker_prompt_mentions_contract()
     print(f"prompt contract smoke suite looks good ({len(prompts)} cases)")
     return 0
 
