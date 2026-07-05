@@ -1,4 +1,5 @@
 .darwin/
 .superpowers/
+.local-maintenance/
 __pycache__/
 *.pyc

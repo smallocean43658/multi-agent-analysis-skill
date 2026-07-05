@@ -802,12 +802,12 @@ PY
 round2="$tmpdir/round2.json"
 cat >"$round2" <<'JSON'
 [
-  {"slot": "B1", "lens": "Follow-up 1", "question": "What needs follow-up 1?"},
-  {"slot": "B2", "lens": "Follow-up 2", "question": "What needs follow-up 2?"},
-  {"slot": "B3", "lens": "Follow-up 3", "question": "What needs follow-up 3?"},
-  {"slot": "B4", "lens": "Follow-up 4", "question": "What needs follow-up 4?"},
-  {"slot": "B5", "lens": "Follow-up 5", "question": "What needs follow-up 5?"},
-  {"slot": "B6", "lens": "Follow-up 6", "question": "What needs follow-up 6?"}
+  {"slot": "R2-1", "lens": "Follow-up 1", "question": "What needs follow-up 1?"},
+  {"slot": "R2-2", "lens": "Follow-up 2", "question": "What needs follow-up 2?"},
+  {"slot": "R2-3", "lens": "Follow-up 3", "question": "What needs follow-up 3?"},
+  {"slot": "R2-4", "lens": "Follow-up 4", "question": "What needs follow-up 4?"},
+  {"slot": "R2-5", "lens": "Follow-up 5", "question": "What needs follow-up 5?"},
+  {"slot": "R2-6", "lens": "Follow-up 6", "question": "What needs follow-up 6?"}
 ]
 JSON
 
@@ -816,7 +816,7 @@ JSON
   --round 2 \
   --assignments "$round2" >/dev/null
 
-for slot in B1 B2 B3 B4 B5 B6; do
+for slot in R2-1 R2-2 R2-3 R2-4 R2-5 R2-6; do
   "$LEDGER" record-spawn \
     --run-dir "$run_dir" \
     --round 2 \
@@ -1073,12 +1073,12 @@ create_completed_cross_review_round
 round2_wrong_slots="$tmpdir/round2-wrong-slots.json"
 cat >"$round2_wrong_slots" <<'JSON'
 [
-  {"slot": "B1", "lens": "Occam's Razor", "question": "Is the guardrail overbuilt?", "target_id": "cr-guardrail"},
-  {"slot": "B2", "lens": "Expected Cost Optimality", "question": "Is the cost worth it?", "target_id": "cr-guardrail"},
-  {"slot": "B3", "lens": "Execution Friction", "question": "Will users follow it?", "target_id": "cr-guardrail"},
-  {"slot": "B4", "lens": "Adversarial Review", "question": "What fails without it?", "target_id": "cr-guardrail"},
-  {"slot": "B5", "lens": "Bounded Bayesian", "question": "What evidence changes confidence?", "target_id": "cr-guardrail"},
-  {"slot": "B6", "lens": "Scope Control", "question": "What smaller version works?", "target_id": "cr-guardrail"}
+  {"slot": "X1", "lens": "Occam's Razor", "question": "Is the guardrail overbuilt?", "target_id": "cr-guardrail"},
+  {"slot": "X2", "lens": "Expected Cost Optimality", "question": "Is the cost worth it?", "target_id": "cr-guardrail"},
+  {"slot": "X3", "lens": "Execution Friction", "question": "Will users follow it?", "target_id": "cr-guardrail"},
+  {"slot": "X4", "lens": "Adversarial Review", "question": "What fails without it?", "target_id": "cr-guardrail"},
+  {"slot": "X5", "lens": "Bounded Bayesian", "question": "What evidence changes confidence?", "target_id": "cr-guardrail"},
+  {"slot": "X6", "lens": "Scope Control", "question": "What smaller version works?", "target_id": "cr-guardrail"}
 ]
 JSON
 

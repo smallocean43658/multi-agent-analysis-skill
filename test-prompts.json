@@ -7,7 +7,16 @@
       "should_trigger": true,
       "mode": "review",
       "category": "explicit-review-trigger",
-      "required_behaviors": ["create-run-record", "six-review-lenses", "dispatch-six-workers", "record-results-and-close", "synthesize", "continuation-gate"]
+      "required_behaviors": [
+        "create-run-record",
+        "six-review-lenses",
+        "dispatch-six-workers",
+        "record-results-and-close",
+        "synthesize",
+        "continuation-gate",
+        "default-review-uses-A-portfolio",
+        "same-target-boundary"
+      ]
     },
     "expected": "The agent loads orchestrating-multi-agent-analysis, selects review mode, creates a run record under .superpowers/multi-agent-analysis/, prepares exactly six first-round review lenses, dispatches six subagents, waits for all usable results, closes finished subagents, writes synthesis, and stops unless the continuation gate justifies another round."
   },
@@ -19,7 +28,12 @@
       "should_trigger": true,
       "mode": "review",
       "category": "explicit-review-trigger",
-      "required_behaviors": ["target-in-brief", "six-review-lenses"]
+      "required_behaviors": [
+        "target-in-brief",
+        "six-review-lenses",
+        "default-review-uses-A-portfolio",
+        "same-target-boundary"
+      ]
     },
     "expected": "The agent selects review mode only because the prompt explicitly asks for multi-agent review, records the target file in brief.md, and uses the six fixed review lenses."
   },
@@ -31,7 +45,14 @@
       "should_trigger": true,
       "mode": "divergent-analysis",
       "category": "explicit-divergent-trigger",
-      "required_behaviors": ["six-divergent-lenses", "adaptive-divergent-lenses", "target-rationale", "no-fixed-divergent-taxonomy", "no-ad-hoc-brainstorming"]
+      "required_behaviors": [
+        "six-divergent-lenses",
+        "adaptive-divergent-lenses",
+        "target-rationale",
+        "no-fixed-divergent-taxonomy",
+        "no-ad-hoc-brainstorming",
+        "same-target-boundary"
+      ]
     },
     "expected": "The agent selects divergent-analysis mode, prepares six target-adaptive lenses, records why each angle is materially decision-relevant and what new information it should add, and does not fall back to a fixed divergent taxonomy or ad hoc brainstorming."
   },
@@ -43,7 +64,11 @@
       "should_trigger": true,
       "mode": "divergent-analysis",
       "category": "explicit-divergent-trigger",
-      "required_behaviors": ["create-run-record", "assigned-lens-only"]
+      "required_behaviors": [
+        "create-run-record",
+        "assigned-lens-only",
+        "same-target-boundary"
+      ]
     },
     "expected": "The agent selects divergent-analysis mode, creates the local ledger before dispatch, and asks each worker to analyze only its assigned lens."
   },
@@ -55,7 +80,9 @@
       "should_trigger": false,
       "mode": null,
       "category": "ordinary-review-non-trigger",
-      "required_behaviors": ["no-skill"]
+      "required_behaviors": [
+        "no-skill"
+      ]
     },
     "expected": "The agent does not use orchestrating-multi-agent-analysis because no multi-agent or six-agent trigger is present; it performs ordinary single-agent review or asks whether the user wants multi-agent review."
   },
@@ -67,7 +94,9 @@
       "should_trigger": false,
       "mode": null,
       "category": "ordinary-planning-non-trigger",
-      "required_behaviors": ["no-skill"]
+      "required_behaviors": [
+        "no-skill"
+      ]
     },
     "expected": "The agent does not use this skill; implementation planning routes to the normal planning workflow unless the user explicitly requests multi-agent analysis of that plan."
   },
@@ -79,7 +108,9 @@
       "should_trigger": false,
       "mode": null,
       "category": "parallel-workstreams-non-trigger",
-      "required_behaviors": ["no-skill"]
+      "required_behaviors": [
+        "no-skill"
+      ]
     },
     "expected": "The agent does not use orchestrating-multi-agent-analysis because the user wants separate workstreams, not six lenses on the same target."
   },
@@ -91,7 +122,9 @@
       "should_trigger": true,
       "mode": "review",
       "category": "clarification-before-run",
-      "required_behaviors": ["ask-clarification-before-run"]
+      "required_behaviors": [
+        "ask-clarification-before-run"
+      ]
     },
     "expected": "The agent asks one concise clarification question for the target artifact, decision, or question before creating a run record or dispatching workers."
   },
@@ -103,7 +136,10 @@
       "should_trigger": true,
       "mode": "review",
       "category": "missing-tooling-blocker",
-      "required_behaviors": ["stop-on-missing-tools", "no-fake-workers"]
+      "required_behaviors": [
+        "stop-on-missing-tools",
+        "no-fake-workers"
+      ]
     },
     "expected": "The agent stops and reports the blocker instead of simulating six independent subagents or producing fake worker results."
   },
@@ -115,7 +151,10 @@
       "should_trigger": true,
       "mode": "review",
       "category": "tooling-mapping",
-      "required_behaviors": ["record-active-tool-names", "no-hardcoded-tooling"]
+      "required_behaviors": [
+        "record-active-tool-names",
+        "no-hardcoded-tooling"
+      ]
     },
     "expected": "The agent uses the callable names exposed by the active tools list, records them in state.json and ledger.md, and does not hardcode stale upstream worker tool aliases."
   },
@@ -127,7 +166,10 @@
       "should_trigger": true,
       "mode": "review",
       "category": "exactly-six-enforcement",
-      "required_behaviors": ["require-exactly-six", "refuse-partial-round"]
+      "required_behaviors": [
+        "require-exactly-six",
+        "refuse-partial-round"
+      ]
     },
     "expected": "The agent refuses the partial multi-agent analysis shape or asks to downgrade to ordinary single-agent analysis; it does not run a five-agent round under this skill."
   },
@@ -139,7 +181,10 @@
       "should_trigger": true,
       "mode": "review",
       "category": "continuation-gate",
-      "required_behaviors": ["continuation-gate", "round2-only-if-decision-critical"]
+      "required_behaviors": [
+        "continuation-gate",
+        "round2-only-if-decision-critical"
+      ]
     },
     "expected": "The agent defaults to one round and starts round two only when decision-critical disagreement or high-value missing perspective is recorded; otherwise it stops with an actionable synthesis."
   },
@@ -151,7 +196,11 @@
       "should_trigger": true,
       "mode": "review",
       "category": "round3-user-approval",
-      "required_behaviors": ["continuation-gate", "round3-user-approval", "round4-cap"]
+      "required_behaviors": [
+        "continuation-gate",
+        "round3-user-approval",
+        "round4-cap"
+      ]
     },
     "expected": "The agent may run round two only if the gate justifies it, but asks the user before round three or round four and treats round four as the hard cap."
   },
@@ -163,7 +212,9 @@
       "should_trigger": false,
       "mode": null,
       "category": "ordinary-review-non-trigger",
-      "required_behaviors": ["no-skill"]
+      "required_behaviors": [
+        "no-skill"
+      ]
     },
     "expected": "The agent does not use orchestrating-multi-agent-analysis because the user asked for an ordinary single-agent review without multi-agent wording."
   },
@@ -175,7 +226,9 @@
       "should_trigger": false,
       "mode": null,
       "category": "ordinary-divergent-non-trigger",
-      "required_behaviors": ["no-skill"]
+      "required_behaviors": [
+        "no-skill"
+      ]
     },
     "expected": "The agent does not use this skill because broad angle discovery alone is not a trigger; the user must explicitly ask for multi-agent or multi-subagent divergent analysis."
   },
@@ -187,7 +240,11 @@
       "should_trigger": true,
       "mode": "review",
       "category": "explicit-review-trigger",
-    "required_behaviors": ["require-exactly-six", "six-review-lenses"]
+      "required_behaviors": [
+        "require-exactly-six",
+        "six-review-lenses",
+        "default-review-uses-A-portfolio"
+      ]
     },
     "expected": "The agent selects review mode and still runs exactly six subagents even though the user did not spell out the number six."
   },
@@ -199,7 +256,13 @@
       "should_trigger": true,
       "mode": "divergent-analysis",
       "category": "explicit-generic-analysis-trigger",
-      "required_behaviors": ["explicit-multi-agent-precondition", "route-generic-analysis-to-divergent", "adaptive-divergent-lenses", "dispatch-six-workers"]
+      "required_behaviors": [
+        "explicit-multi-agent-precondition",
+        "route-generic-analysis-to-divergent",
+        "adaptive-divergent-lenses",
+        "dispatch-six-workers",
+        "same-target-boundary"
+      ]
     },
     "expected": "The agent treats 多子代理分析 as explicit multi-agent wording, selects divergent-analysis because the user asks for broad direction analysis rather than review, and prepares six target-adaptive lenses."
   },
@@ -211,7 +274,10 @@
       "should_trigger": false,
       "mode": null,
       "category": "ordinary-analysis-non-trigger",
-      "required_behaviors": ["no-skill", "explicit-multi-agent-precondition"]
+      "required_behaviors": [
+        "no-skill",
+        "explicit-multi-agent-precondition"
+      ]
     },
     "expected": "The agent does not use orchestrating-multi-agent-analysis because the user did not ask for multi-agent, multi-subagent, or six-agent analysis."
   },
@@ -223,7 +289,12 @@
       "should_trigger": true,
       "mode": "divergent-analysis",
       "category": "adaptive-divergent-lenses",
-      "required_behaviors": ["adaptive-divergent-lenses", "no-fixed-divergent-taxonomy", "target-rationale"]
+      "required_behaviors": [
+        "adaptive-divergent-lenses",
+        "no-fixed-divergent-taxonomy",
+        "target-rationale",
+        "same-target-boundary"
+      ]
     },
     "expected": "The agent chooses six materially different lenses fitted to the target instead of using a hardcoded five-category divergent taxonomy."
   },
@@ -235,8 +306,30 @@
       "should_trigger": true,
       "mode": "review",
       "category": "cross-review-gate",
-      "required_behaviors": ["cross-review-gate", "cross-review-target-ids", "targeted-cross-examination", "claim-disposition", "worker-prompt-contract"]
+      "required_behaviors": [
+        "cross-review-gate",
+        "cross-review-target-ids",
+        "targeted-cross-examination",
+        "claim-disposition",
+        "worker-prompt-contract",
+        "same-target-boundary"
+      ]
     },
     "expected": "The agent keeps round one independent, records decision-critical single-lens findings as cross-review targets with target_id, and does not finalize them until they are cross-reviewed, downgraded, or externalized."
+  },
+  {
+    "id": 21,
+    "scenario": "explicit multi-agent analysis across multiple targets requires clarification",
+    "prompt": "Run multi-agent analysis on docs/plan.md and docs/spec.md and compare which one to fix first.",
+    "contract": {
+      "should_trigger": true,
+      "mode": "divergent-analysis",
+      "category": "clarification-before-run",
+      "required_behaviors": [
+        "ask-clarification-before-run",
+        "same-target-boundary"
+      ]
+    },
+    "expected": "The agent does not create a run record immediately because the request spans multiple targets; it asks one clarification question to choose one target or downgrade to ordinary analysis."
   }
 ]

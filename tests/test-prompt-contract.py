@@ -12,10 +12,8 @@ ROOT = Path(__file__).resolve().parents[1]
 PROMPTS_PATH = ROOT / "test-prompts.json"
 SKILL_PATH = ROOT / "SKILL.md"
 WORKER_PROMPT_PATH = ROOT / "round-subagent-prompt.md"
-README_PATH = ROOT / "README.md"
-
 VALID_MODES = {"review", "divergent-analysis"}
-EXPECTED_PROMPT_IDS = set(range(1, 21))
+EXPECTED_PROMPT_IDS = set(range(1, 22))
 
 REQUIRED_CATEGORIES = {
     "explicit-review-trigger",
@@ -50,6 +48,8 @@ REQUIRED_BEHAVIORS = {
     "targeted-cross-examination",
     "claim-disposition",
     "worker-prompt-contract",
+    "default-review-uses-A-portfolio",
+    "same-target-boundary",
     "dispatch-six-workers",
     "record-results-and-close",
     "synthesize",
@@ -179,6 +179,9 @@ def assert_skill_mentions_smoke_test() -> None:
         "downgraded_non_decision_critical",
         "external-verification",
         "external_verification",
+        "| A1 | First Principles |",
+        "same target",
+        "analysis` or `分析` alone is not enough",
     ]
     for term in required_skill_terms:
         if term not in skill_text:
@@ -228,7 +231,6 @@ def assert_worker_prompt_mentions_contract() -> None:
             "round-subagent-prompt.md must include a dedicated minimal return contract "
             "for C1-C6 targeted cross-review"
         )
-
 
 def main() -> int:
     prompts = load_prompts()
