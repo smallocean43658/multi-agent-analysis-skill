@@ -73,12 +73,11 @@ Local run records are intentionally ignored by git.
 
 ## Install
 
-Clone the repository and symlink it into Codex's skills directory:
+Clone the repository directly into Codex's skills directory:
 
 ```bash
-git clone https://github.com/smallocean43658/multi-agent-analysis-skill.git ~/multi-agent-analysis-skill
 mkdir -p ~/.codex/skills
-ln -sfn ~/multi-agent-analysis-skill ~/.codex/skills/orchestrating-multi-agent-analysis
+git clone https://github.com/smallocean43658/multi-agent-analysis-skill.git ~/.codex/skills/orchestrating-multi-agent-analysis
 ```
 
 Restart or refresh your Codex session so the skill list is reloaded.
@@ -86,9 +85,27 @@ Restart or refresh your Codex session so the skill list is reloaded.
 To update an existing install:
 
 ```bash
-cd ~/multi-agent-analysis-skill
+cd ~/.codex/skills/orchestrating-multi-agent-analysis
 git pull --ff-only
 ```
+
+If your Codex environment only scans `~/.agents/skills`, install to that
+directory instead, or create one symlink from the Codex install:
+
+```bash
+mkdir -p ~/.agents/skills
+ln -sfn ~/.codex/skills/orchestrating-multi-agent-analysis ~/.agents/skills/orchestrating-multi-agent-analysis
+```
+
+If a session says the skill is not exposed, first verify the local install path:
+
+```bash
+test -f ~/.codex/skills/orchestrating-multi-agent-analysis/SKILL.md
+```
+
+If the file exists but the skill is still missing from the session's skill list,
+restart or refresh Codex. Some runtimes select which skills are exposed per
+session; that is separate from whether the files exist on disk.
 
 ## Requirements
 
