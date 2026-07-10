@@ -13,7 +13,7 @@ PROMPTS_PATH = ROOT / "test-prompts.json"
 SKILL_PATH = ROOT / "SKILL.md"
 WORKER_PROMPT_PATH = ROOT / "round-subagent-prompt.md"
 VALID_MODES = {"review", "divergent-analysis"}
-EXPECTED_PROMPT_IDS = set(range(1, 22))
+EXPECTED_PROMPT_IDS = set(range(1, 26))
 
 REQUIRED_CATEGORIES = {
     "explicit-review-trigger",
@@ -30,8 +30,12 @@ REQUIRED_CATEGORIES = {
     "cross-review-gate",
     "exactly-six-enforcement",
     "continuation-gate",
-    "round3-user-approval",
+    "legacy-round4-cap",
     "ordinary-divergent-non-trigger",
+    "target-overlay",
+    "single-divergent-engineering-angle",
+    "no-forced-engineering-overlay",
+    "adaptive-followup-backlog",
 }
 
 REQUIRED_BEHAVIORS = {
@@ -65,8 +69,13 @@ REQUIRED_BEHAVIORS = {
     "refuse-partial-round",
     "continuation-gate",
     "round2-only-if-decision-critical",
-    "round3-user-approval",
-    "round4-cap",
+    "round3-plus-user-approval",
+    "legacy-round4-cap",
+    "distributed-engineering-overlay",
+    "single-divergent-engineering-angle",
+    "no-forced-engineering-overlay",
+    "adaptive-followup-backlog",
+    "objective-alignment",
     "no-skill",
 }
 
@@ -182,10 +191,23 @@ def assert_skill_mentions_smoke_test() -> None:
         "| A1 | First Principles |",
         "same target",
         "analysis` or `分析` alone is not enough",
+        "Target overlay",
+        "distributed engineering overlay",
+        "engineering-feasibility",
+        "objective alignment",
+        "adaptive backlog",
+        "Legacy runs without `protocol_version`",
     ]
     for term in required_skill_terms:
         if term not in skill_text:
             fail(f"SKILL.md must document {term!r}")
+
+    review_table = re.findall(
+        r"\| A1 \| First Principles \|[\s\S]*?\| A6 \| Execution Friction \|",
+        skill_text,
+    )
+    if len(review_table) != 1:
+        fail("SKILL.md must contain exactly one complete classic A1-A6 review table")
 
     if not re.search(
         r"cross_review_gate_status[\s\S]{0,120}external_verification",
@@ -212,6 +234,10 @@ def assert_worker_prompt_mentions_contract() -> None:
         "rejected",
         "unresolved",
         "external-verification",
+        "Target overlay:",
+        "Overlay checks:",
+        "Owned lens or dimension:",
+        "Out of scope:",
     ]
     for term in required_terms:
         if term not in prompt_text:

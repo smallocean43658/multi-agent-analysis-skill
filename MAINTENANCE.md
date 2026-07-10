@@ -24,9 +24,27 @@ This file is for maintainers. Keep user-facing explanation in `README.md` and ru
 - `LICENSE` permits use and modification but prohibits publishing, redistribution, sublicensing, sale, packaging, mirroring, hosting, or third-party availability without prior written permission.
 - `scripts/run-ledger` owns mechanical validation, lifecycle state transitions, and markdown rendering.
 - The main agent still owns judgment: whether to trigger, which active tools to use, how to synthesize, and whether another round is worth running.
-- Exactly six workers are required for a valid skill round. Partial rounds must stop or be explicitly marked blocked.
+- Round 1 and legacy protocol rounds use six workers; adaptive follow-up batches use 1-6.
 
 ## Change Log
+
+### 2026-07-11
+
+- Selected portfolio name: classic A1-A6.
+- Selection validation date: 2026-07-11.
+- `adaptive-backlog-v1` decision: new follow-up batches use 1-6 fresh workers and retain pending targets in the backlog.
+- Fresh-only activation decision: every follow-up worker is newly activated; worker reuse is not implemented.
+- Canonical-round reconciliation decision: round JSON is canonical and projections reconcile deterministically.
+- Legacy compatibility behavior: active legacy runs retain fixed-six and Round-4-cap behavior.
+- Deferred to a separate evidence-backed plan: worker resume, replacement, retry, and multi-activation.
+- Validation commands:
+  - `bash tests/test-release-metadata.sh`
+  - `python3 tests/test-prompt-contract.py`
+  - `bash tests/test-run-ledger.sh`
+  - `bash tests/test-ledger-recovery.sh`
+  - `bash tests/test-followup-protocol.sh`
+  - `bash -n tests/test-ledger-recovery.sh`
+  - `bash -n tests/test-followup-protocol.sh`
 
 ### 2026-07-04
 
@@ -81,9 +99,13 @@ Run before committing changes:
 ```bash
 python3 tests/test-prompt-contract.py
 bash tests/test-run-ledger.sh
+bash tests/test-ledger-recovery.sh
+bash tests/test-followup-protocol.sh
 bash tests/test-release-metadata.sh
 python3 -m py_compile scripts/run-ledger tests/test-prompt-contract.py
 bash -n tests/test-run-ledger.sh
+bash -n tests/test-ledger-recovery.sh
+bash -n tests/test-followup-protocol.sh
 bash -n tests/test-release-metadata.sh
 git diff --check
 ```

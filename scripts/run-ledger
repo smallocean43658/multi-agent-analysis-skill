@@ -4,9 +4,15 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
+import fcntl
+import hashlib
 import json
+import os
 import re
+import shutil
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -14,7 +20,12 @@ from uuid import uuid4
 
 
 VERSION = 1
-EXPECTED_AGENTS_PER_ROUND = 6
+LEGACY_PROTOCOL = "legacy-fixed-six-v1"
+ADAPTIVE_PROTOCOL = "adaptive-backlog-v1"
+ROUND_ONE_ASSIGNMENT_COUNT = 6
+FOLLOWUP_SEAT_LIMIT = 6
+USER_APPROVAL_FROM_ROUND = 3
+EXPECTED_AGENTS_PER_ROUND = ROUND_ONE_ASSIGNMENT_COUNT
 ROUND_CAP = 4
 REVIEW_ROUND_ONE_LENSES = {
     "A1": "First Principles",
@@ -24,14 +35,67 @@ REVIEW_ROUND_ONE_LENSES = {
     "A5": "Adversarial Review",
     "A6": "Execution Friction",
 }
+TARGET_OVERLAYS = {"", "engineering"}
+ENGINEERING_OVERLAY_CHECKS = {
+    "A1": [
+        "functional-requirements",
+        "non-functional-requirements",
+        "acceptance-criteria",
+        "compatibility-and-platform-constraints",
+    ],
+    "A2": [
+        "simplest-sufficient-mechanism",
+        "architecture-and-ownership-boundaries",
+        "interfaces-data-flow-and-state",
+        "dependency-necessity",
+    ],
+    "A3": [
+        "prototype-test-and-benchmark-evidence",
+        "technical-assumptions",
+        "missing-evidence",
+        "falsification-conditions",
+    ],
+    "A4": [
+        "build-buy-and-alternative-architecture",
+        "implementation-and-operating-cost",
+        "migration-and-switching-cost",
+        "reversibility-and-opportunity-cost",
+    ],
+    "A5": [
+        "concurrency-and-data-integrity",
+        "security-and-abuse",
+        "dependency-and-capacity-failure",
+        "degradation-recovery-and-rollback",
+    ],
+    "A6": [
+        "implementation-sequence-and-ownership",
+        "test-strategy-and-observability",
+        "deployment-and-migration",
+        "maintenance-and-handoff",
+    ],
+}
+DIVERGENT_ENGINEERING_CHECKS = [
+    "simplest-sufficient-mechanism",
+    "implementation-feasibility",
+    "testability-and-observability",
+    "failure-recovery-and-reversibility",
+    "maintenance-portability-and-handoff",
+]
 DIVERGENT_ROUND_ONE_REQUIRED_KEYS = ["why_material", "expected_new_information"]
-SPAWN_STATUSES = {"spawned", "failed"}
+SPAWN_STATUSES = {"planned", "spawned", "failed", "unknown"}
 RESULT_STATUSES = {"completed", "failed"}
 CLOSE_STATUSES = {"closed", "failed", "cancelled"}
 ABNORMAL_CLOSE_STATUSES = {"failed", "cancelled"}
 TERMINAL_RUN_STATES = {"blocked", "complete"}
 TERMINAL_ROUND_STATES = {"blocked", "finalized"}
-ROUND_JSON_PATTERN = re.compile(r"round-\d{2}\.json$")
+ROUND_JSON_PATTERN = re.compile(r"round-(\d+)\.json$")
+DYNAMIC_STATE_FIELDS = {
+    "status",
+    "current_round",
+    "last_finalized_round",
+    "next_action",
+    "updated_at",
+}
 SYNTHESIS_LIST_FIELDS = [
     "convergence",
     "disagreement",
@@ -68,7 +132,24 @@ CROSS_REVIEW_TARGET_FIELDS = [
     "why_decision_critical",
     "disposition",
 ]
+ADAPTIVE_CROSS_REVIEW_TARGET_FIELDS = [
+    "target_id",
+    "source_slot",
+    "claim",
+    "why_decision_critical",
+    "review_policy",
+    "conflict_ref",
+    "disposition",
+]
 CROSS_REVIEW_OUTCOME_FIELDS = ["target_id", "status", "rationale"]
+RESOLVED_OUTCOMES = {"accepted", "modified", "rejected", "external-verification"}
+INITIAL_REVIEW_QUOTAS = {"single": 1, "dual": 2}
+OBJECTIVE_ALIGNMENT_FIELDS = {"status", "rationale", "unmet_requirements"}
+OBJECTIVE_ALIGNMENT_STATUSES = {"aligned", "needs_revision"}
+
+
+def protocol_version(state: dict[str, Any]) -> str:
+    return str(state.get("protocol_version") or LEGACY_PROTOCOL)
 
 
 def now_iso() -> str:
@@ -83,8 +164,49 @@ def slugify(value: str, fallback: str = "target") -> str:
     return slug[:48].strip("-") or fallback
 
 
-def write_json(path: Path, payload: dict[str, Any]) -> None:
-    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+def fsync_directory(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
+    temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
+    data = json.dumps(payload, indent=2, ensure_ascii=False) + "\n"
+    with temporary.open("w", encoding="utf-8") as handle:
+        handle.write(data)
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(temporary, path)
+    fsync_directory(path.parent)
+
+
+def write_text_atomic(path: Path, data: str) -> None:
+    temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
+    with temporary.open("w", encoding="utf-8") as handle:
+        handle.write(data)
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(temporary, path)
+    fsync_directory(path.parent)
+
+
+@contextmanager
+def run_lock(run_dir: Path):
+    lock_path = run_dir / ".run-ledger.lock"
+    with lock_path.open("a+", encoding="utf-8") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def maybe_fail(command: str, boundary: str) -> None:
+    if os.environ.get("RUN_LEDGER_FAILPOINT") == f"{command}:{boundary}":
+        os._exit(97)
 
 
 def read_json(path: Path) -> Any:
@@ -96,10 +218,13 @@ def read_json(path: Path) -> Any:
         raise SystemExit(f"invalid JSON in {path}: {exc}") from None
 
 
-def append_ledger(run_dir: Path, message: str) -> None:
-    ledger = run_dir / "ledger.md"
-    with ledger.open("a", encoding="utf-8") as handle:
-        handle.write(f"- {now_iso()} - {message}\n")
+def round_json_paths(run_dir: Path) -> list[Path]:
+    numbered: list[tuple[int, Path]] = []
+    for path in run_dir.glob("round-*.json"):
+        match = ROUND_JSON_PATTERN.fullmatch(path.name)
+        if match is not None:
+            numbered.append((int(match.group(1)), path))
+    return [path for _, path in sorted(numbered)]
 
 
 def require_cli_text(value: Any, name: str) -> str:
@@ -115,13 +240,29 @@ def create_unique_run_dir(root: Path, mode: str, title: str) -> tuple[str, Path]
     for index in range(1000):
         run_id = base if index == 0 else f"{base}-{index + 1}"
         candidate = root / run_id
-        try:
-            candidate.mkdir(parents=False, exist_ok=False)
+        if not candidate.exists():
             return run_id, candidate
-        except FileExistsError:
-            continue
 
     raise SystemExit(f"could not allocate unique run directory under {root}")
+
+
+def cleanup_stale_init_directories(root: Path) -> None:
+    pattern = re.compile(
+        r"\.run-ledger-init-"
+        r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    )
+    cutoff = time.time() - (24 * 60 * 60)
+    for candidate in root.iterdir():
+        if not pattern.fullmatch(candidate.name):
+            continue
+        if candidate.is_symlink() or not candidate.is_dir():
+            continue
+        try:
+            modified_at = candidate.stat().st_mtime
+        except FileNotFoundError:
+            continue
+        if modified_at < cutoff:
+            shutil.rmtree(candidate)
 
 
 def render_brief(args: argparse.Namespace, run_id: str) -> str:
@@ -148,30 +289,35 @@ CWD: {args.cwd or ""}
 
 ## Notes
 
-Add any additional context needed by all six subagents before dispatching the round.
+Add any additional context needed by every worker before dispatching the round.
 """
 
 
 def command_init(args: argparse.Namespace) -> int:
     root = Path(args.root)
     root.mkdir(parents=True, exist_ok=True)
-    (root / ".gitignore").write_text("*\n!.gitignore\n", encoding="utf-8")
+    cleanup_stale_init_directories(root)
+    write_text_atomic(root / ".gitignore", "*\n!.gitignore\n")
 
     title = args.title or args.target
     spawn_tool = require_cli_text(args.spawn_tool, "--spawn-tool")
     wait_tool = require_cli_text(args.wait_tool, "--wait-tool")
     close_tool = require_cli_text(args.close_tool, "--close-tool")
+    objective = require_cli_text(args.objective, "--objective")
     run_id, run_dir = create_unique_run_dir(root, args.mode, title)
+    created_at = now_iso()
 
     state = {
         "version": VERSION,
+        "protocol_version": ADAPTIVE_PROTOCOL,
         "run_id": run_id,
         "mode": args.mode,
+        "target_overlay": args.target_overlay,
         "status": "initialized",
         "target": args.target,
-        "objective": args.objective,
+        "objective": objective,
         "title": title,
-        "created_at": now_iso(),
+        "created_at": created_at,
         "root": str(root),
         "run_dir": str(run_dir),
         "cwd": args.cwd or "",
@@ -185,15 +331,24 @@ def command_init(args: argparse.Namespace) -> int:
         "current_round": 1,
         "last_finalized_round": 0,
         "next_action": "prepare_round",
+        "updated_at": created_at,
     }
 
-    (run_dir / "brief.md").write_text(render_brief(args, run_id), encoding="utf-8")
-    (run_dir / "ledger.md").write_text(
-        f"# Multi-Agent Analysis Ledger\n\nRun ID: {run_id}\n\n"
-        f"- {now_iso()} - initialized run record\n",
-        encoding="utf-8",
-    )
-    write_json(run_dir / "state.json", state)
+    staging = root / f".run-ledger-init-{uuid4()}"
+    staging.mkdir(parents=False, exist_ok=False)
+    try:
+        write_text_atomic(staging / "brief.md", render_brief(args, run_id))
+        write_text_atomic(staging / "ledger.md", render_ledger(state, []))
+        maybe_fail("init", "after-ledger")
+        write_json_atomic(staging / "state.json", state)
+        maybe_fail("init", "after-state")
+        fsync_directory(staging)
+        os.rename(staging, run_dir)
+        fsync_directory(root)
+    except BaseException:
+        if staging.exists():
+            shutil.rmtree(staging)
+        raise
 
     print(run_dir)
     return 0
@@ -212,6 +367,13 @@ def validate_unique_lenses(assignments: list[dict[str, Any]]) -> None:
 
 
 def validate_divergent_round_one(assignments: list[dict[str, Any]]) -> None:
+    expected_slots = [f"D{index}" for index in range(1, ROUND_ONE_ASSIGNMENT_COUNT + 1)]
+    actual_slots = [item["slot"] for item in assignments]
+    if actual_slots != expected_slots:
+        raise SystemExit(
+            "divergent-analysis round 1 slots must be exactly "
+            f"{', '.join(expected_slots)} in order"
+        )
     validate_unique_lenses(assignments)
     for index, item in enumerate(assignments, start=1):
         for key in DIVERGENT_ROUND_ONE_REQUIRED_KEYS:
@@ -238,12 +400,79 @@ def validate_round_one_lenses(assignments: list[dict[str, Any]], mode: str) -> N
             )
 
 
-def validate_assignments(raw: Any, mode: str, round_number: int) -> list[dict[str, Any]]:
+def validate_target_overlay(
+    assignments: list[dict[str, Any]],
+    mode: str,
+    round_number: int,
+    target_overlay: str,
+) -> None:
+    if target_overlay not in TARGET_OVERLAYS:
+        raise SystemExit(f"unsupported target overlay: {target_overlay!r}")
+
+    overlay_fields = {"overlay_checks", "overlay_role"}
+    if not target_overlay:
+        for index, item in enumerate(assignments, start=1):
+            unexpected = overlay_fields.intersection(item)
+            if unexpected:
+                raise SystemExit(
+                    f"assignment {index} cannot include overlay fields without a target overlay"
+                )
+        return
+
+    if round_number != 1:
+        for index, item in enumerate(assignments, start=1):
+            unexpected = overlay_fields.intersection(item)
+            if unexpected:
+                raise SystemExit(
+                    f"assignment {index} cannot include overlay fields outside round 1"
+                )
+        return
+
+    if mode == "review":
+        for index, item in enumerate(assignments, start=1):
+            if "overlay_role" in item:
+                raise SystemExit("engineering review assignments must not include overlay_role")
+            expected_checks = ENGINEERING_OVERLAY_CHECKS[item["slot"]]
+            if item.get("overlay_checks") != expected_checks:
+                raise SystemExit(
+                    f"{item['slot']} overlay_checks must equal its engineering slot mapping"
+                )
+        return
+
+    engineering_assignments = [
+        item for item in assignments if item.get("overlay_role") == "engineering-feasibility"
+    ]
+    if len(engineering_assignments) != 1:
+        raise SystemExit(
+            "engineering divergent round 1 requires exactly one engineering-feasibility role"
+        )
+    for index, item in enumerate(assignments, start=1):
+        if item in engineering_assignments:
+            if item.get("overlay_checks") != DIVERGENT_ENGINEERING_CHECKS:
+                raise SystemExit(
+                    "engineering-feasibility overlay_checks must equal the divergent engineering mapping"
+                )
+        elif overlay_fields.intersection(item):
+            raise SystemExit(
+                f"assignment {index} must not include engineering overlay fields"
+            )
+
+
+def validate_assignments(
+    raw: Any,
+    mode: str,
+    round_number: int,
+    protocol: str,
+    target_overlay: str,
+) -> list[dict[str, Any]]:
     if not isinstance(raw, list):
         raise SystemExit("assignments JSON must be an array")
     assignments = raw
-    if len(assignments) != EXPECTED_AGENTS_PER_ROUND:
-        raise SystemExit("assignments JSON must contain exactly six entries")
+    if round_number == 1 or protocol == LEGACY_PROTOCOL:
+        if len(assignments) != ROUND_ONE_ASSIGNMENT_COUNT:
+            raise SystemExit("assignments JSON must contain exactly six entries")
+    elif not 1 <= len(assignments) <= FOLLOWUP_SEAT_LIMIT:
+        raise SystemExit("adaptive follow-up assignments must contain between one and six entries")
 
     validated: list[dict[str, Any]] = []
     for index, item in enumerate(assignments, start=1):
@@ -255,9 +484,10 @@ def validate_assignments(raw: Any, mode: str, round_number: int) -> list[dict[st
         validated.append(validated_item)
     slots = [item["slot"] for item in validated]
     if len(set(slots)) != len(slots):
-        raise SystemExit("assignments must use six unique slot labels")
+        raise SystemExit("assignments must use unique slot labels")
     if round_number == 1:
         validate_round_one_lenses(validated, mode)
+    validate_target_overlay(validated, mode, round_number, target_overlay)
     return validated
 
 
@@ -300,6 +530,12 @@ def markdown_cross_review_targets(value: Any) -> str:
         disposition = non_empty_text(item.get("disposition"))
         if disposition:
             lines.append(f"  - Disposition: {markdown_escape(disposition)}")
+        review_policy = non_empty_text(item.get("review_policy"))
+        if review_policy:
+            lines.append(f"  - Review policy: {markdown_escape(review_policy)}")
+        conflict_ref = non_empty_text(item.get("conflict_ref"))
+        if conflict_ref:
+            lines.append(f"  - Conflict ref: {markdown_escape(conflict_ref)}")
         claim = non_empty_text(item.get("claim"))
         if claim:
             lines.append(f"  - Claim: {markdown_escape(claim)}")
@@ -342,6 +578,20 @@ def markdown_object_list(value: Any) -> str:
     return "\n".join(lines) if lines else "- None recorded"
 
 
+def markdown_objective_alignment(value: Any) -> str:
+    if not isinstance(value, dict):
+        return "None recorded"
+    status = markdown_field(value.get("status"))
+    rationale = markdown_field(value.get("rationale"))
+    unmet_requirements = markdown_list(value.get("unmet_requirements"))
+    return (
+        f"Status: {status}\n\n"
+        f"Rationale: {rationale}\n\n"
+        "Unmet Requirements:\n\n"
+        f"{unmet_requirements}"
+    )
+
+
 def render_round_markdown(round_doc: dict[str, Any]) -> str:
     rows = [
         "| Slot | Lens | Question | Agent ID | Result | Close |",
@@ -376,6 +626,8 @@ def render_round_markdown(round_doc: dict[str, Any]) -> str:
 
 Status: {round_doc["status"]}
 Created: {round_doc["created_at"]}
+Incoming backlog: {", ".join(round_doc.get("incoming_backlog_ids", [])) or "None"}
+Active targets: {", ".join(round_doc.get("active_target_ids", [])) or "None"}
 
 ## Assignments
 
@@ -411,6 +663,10 @@ Created: {round_doc["created_at"]}
 
 {markdown_list(synthesis.get("action_list"))}
 
+### Objective Alignment
+
+{markdown_objective_alignment(synthesis.get("objective_alignment"))}
+
 ### Cross Review Gate Status
 
 {markdown_field(synthesis.get("cross_review_gate_status"))}
@@ -441,6 +697,609 @@ Created: {round_doc["created_at"]}
 """
 
 
+def canonical_json_digest(payload: Any) -> str:
+    data = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+    return hashlib.sha256(data).hexdigest()
+
+
+def event_id(
+    round_number: int,
+    slot: str,
+    event: str,
+    content_digest: str = "",
+) -> str:
+    suffix = f"-{content_digest[:12]}" if content_digest else ""
+    return f"r{round_number:02d}-{slot}-{event}{suffix}"
+
+
+def event_content(
+    round_number: int,
+    slot: str,
+    event: str,
+    *,
+    status: str = "",
+    agent_id: str = "",
+    summary: str = "",
+    content_digest: str = "",
+    **extra: Any,
+) -> dict[str, Any]:
+    content = {
+        "event_id": event_id(round_number, slot, event, content_digest),
+        "slot": slot,
+        "event": event,
+        "status": status,
+        "agent_id": agent_id,
+        "summary": summary,
+        **extra,
+    }
+    if content_digest:
+        content["content_digest"] = content_digest
+    return content
+
+
+def find_event(round_doc: dict[str, Any], identifier: str) -> dict[str, Any] | None:
+    for item in round_doc.get("events", []):
+        if item.get("event_id") == identifier:
+            return item
+    return None
+
+
+def event_without_timestamp(item: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: value
+        for key, value in item.items()
+        if key not in {"recorded_at", "migrated_snapshot"}
+    }
+
+
+def require_event_replay(round_doc: dict[str, Any], requested: dict[str, Any]) -> None:
+    existing = find_event(round_doc, str(requested["event_id"]))
+    if existing is None:
+        raise SystemExit(
+            f"canonical event {requested['event_id']!r} is missing for an already committed update"
+        )
+    if event_without_timestamp(existing) != requested:
+        raise SystemExit(f"conflicting replay for event_id={requested['event_id']!r}")
+
+
+def append_canonical_event(
+    round_doc: dict[str, Any],
+    requested: dict[str, Any],
+    recorded_at: str,
+) -> None:
+    existing = find_event(round_doc, str(requested["event_id"]))
+    if existing is not None:
+        if event_without_timestamp(existing) == requested:
+            raise SystemExit(f"duplicate canonical event_id={requested['event_id']!r}")
+        raise SystemExit(f"conflicting replay for event_id={requested['event_id']!r}")
+    round_doc.setdefault("events", []).append({**requested, "recorded_at": recorded_at})
+
+
+def require_legacy_timestamp(value: Any, round_number: int, field: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise SystemExit(
+            f"cannot normalize round-{round_number:02d}: missing {field}; "
+            "legacy event timestamp derivation is ambiguous"
+        )
+    return value
+
+
+def legacy_synthesis_has_recorded_state(round_doc: dict[str, Any]) -> bool:
+    synthesis = round_doc.get("synthesis")
+    if not isinstance(synthesis, dict):
+        return synthesis not in (None, {})
+    finalization_fields = {"next_round_decision", "stop_reason", "next_round_question"}
+    return any(
+        key not in finalization_fields and value not in (None, "", [])
+        for key, value in synthesis.items()
+    )
+
+
+def validate_legacy_synthesis_evidence(
+    round_doc: dict[str, Any], round_number: int
+) -> str | None:
+    synthesis_recorded_at = round_doc.get("synthesis_recorded_at")
+    if round_doc.get("status") == "finalized":
+        if not lifecycle_complete(round_doc):
+            raise SystemExit(
+                f"cannot normalize round-{round_number:02d}: finalized lifecycle is incomplete"
+            )
+        if not synthesis_is_ready(round_doc, require_objective_alignment=False):
+            raise SystemExit(
+                f"cannot normalize round-{round_number:02d}: finalized synthesis is not ready"
+            )
+        return require_legacy_timestamp(
+            synthesis_recorded_at,
+            round_number,
+            "synthesis_recorded_at",
+        )
+    if synthesis_recorded_at not in (None, ""):
+        return require_legacy_timestamp(
+            synthesis_recorded_at,
+            round_number,
+            "synthesis_recorded_at",
+        )
+    if legacy_synthesis_has_recorded_state(round_doc):
+        return require_legacy_timestamp(
+            synthesis_recorded_at,
+            round_number,
+            "synthesis_recorded_at",
+        )
+    return None
+
+
+def upgrade_legacy_event_backfill(
+    round_doc: dict[str, Any], round_number: int
+) -> dict[str, Any]:
+    synthesis_timestamp = validate_legacy_synthesis_evidence(round_doc, round_number)
+    normalized = dict(round_doc)
+    events = [dict(item) for item in round_doc.get("events", [])]
+    if synthesis_timestamp is not None:
+        synthesis = validate_synthesis_payload(round_doc.get("synthesis"))
+        snapshot_summary = f"fields={','.join(sorted(synthesis))}"
+        snapshots = [
+            item
+            for item in events
+            if item.get("event") == "synthesis" and item.get("summary") == snapshot_summary
+        ]
+        if snapshots:
+            snapshots[0]["migrated_snapshot"] = True
+    normalized["events"] = events
+    normalized.pop("legacy_event_backfill", None)
+    return normalized
+
+
+def normalize_legacy_round(round_doc: dict[str, Any]) -> dict[str, Any] | None:
+    raw_events = round_doc.get("events")
+    canonical_event_format = False
+    if raw_events is None:
+        legacy_events: list[dict[str, Any]] = []
+    elif not isinstance(raw_events, list):
+        raise SystemExit("round events must be an array")
+    else:
+        if any(not isinstance(item, dict) for item in raw_events):
+            raise SystemExit("round events must contain objects")
+        has_event_ids = [bool(item.get("event_id")) for item in raw_events]
+        canonical_event_format = bool(has_event_ids) and all(has_event_ids)
+        if any(has_event_ids):
+            if not canonical_event_format:
+                raise SystemExit("cannot normalize a round containing mixed canonical and legacy events")
+        legacy_events = raw_events
+
+    try:
+        round_number = int(round_doc["round"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise SystemExit("legacy round JSON must include an integer round number") from exc
+
+    if canonical_event_format:
+        if round_doc.get("legacy_event_backfill") is True:
+            return upgrade_legacy_event_backfill(round_doc, round_number)
+        return None
+
+    normalized = dict(round_doc)
+    raw_assignments = round_doc.get("assignments")
+    if not isinstance(raw_assignments, list):
+        raise SystemExit(f"round-{round_number:02d} assignments must be an array")
+    assignments = [dict(item) if isinstance(item, dict) else item for item in raw_assignments]
+    if any(not isinstance(item, dict) for item in assignments):
+        raise SystemExit(f"round-{round_number:02d} assignments must contain objects")
+    normalized["assignments"] = assignments
+
+    created_at = require_legacy_timestamp(round_doc.get("created_at"), round_number, "created_at")
+    prepare = event_content(
+        round_number,
+        "round",
+        "prepare",
+        status="planned",
+        summary="prepared exactly six assignments",
+        plan_digest=round_plan_digest(assignments),
+    )
+    canonical_events = [{**prepare, "recorded_at": created_at}]
+
+    assignments_by_slot: dict[str, dict[str, Any]] = {}
+    expected_lifecycle: set[tuple[str, str]] = set()
+    lifecycle_fields = {
+        "spawn": ("spawn_status", "spawn_recorded_at"),
+        "result": ("result_status", "result_recorded_at"),
+        "close": ("close_status", "close_recorded_at"),
+    }
+    for assignment in assignments:
+        slot = str(assignment.get("slot") or "")
+        if not slot or slot in assignments_by_slot:
+            raise SystemExit(f"round-{round_number:02d} has invalid or duplicate assignment slots")
+        assignments_by_slot[slot] = assignment
+        for event, (status_field, _) in lifecycle_fields.items():
+            if assignment.get(status_field) not in (None, "", "pending"):
+                expected_lifecycle.add((event, slot))
+
+    seen_lifecycle: set[tuple[str, str]] = set()
+    for legacy_event in legacy_events:
+        event = str(legacy_event.get("event") or "")
+        slot = str(legacy_event.get("slot") or "")
+        if event not in lifecycle_fields:
+            raise SystemExit(
+                f"cannot normalize round-{round_number:02d}: unsupported legacy event {event!r}"
+            )
+        key = (event, slot)
+        if key in seen_lifecycle:
+            raise SystemExit(
+                f"cannot normalize round-{round_number:02d}: duplicate legacy {event} event for {slot}"
+            )
+        seen_lifecycle.add(key)
+        assignment = assignments_by_slot.get(slot)
+        if assignment is None or key not in expected_lifecycle:
+            raise SystemExit(
+                f"cannot normalize round-{round_number:02d}: legacy {event} event conflicts with {slot}"
+            )
+
+        status_field, timestamp_field = lifecycle_fields[event]
+        status = str(assignment.get(status_field) or "")
+        validate_record_status(event, status)
+        if str(legacy_event.get("status") or "") != status:
+            raise SystemExit(
+                f"cannot normalize round-{round_number:02d}: legacy {event} status conflicts with {slot}"
+            )
+        recorded_at = require_legacy_timestamp(
+            assignment.get(timestamp_field),
+            round_number,
+            f"assignments[{slot!r}].{timestamp_field}",
+        )
+        legacy_recorded_at = legacy_event.get("recorded_at")
+        if legacy_recorded_at not in (None, "", recorded_at):
+            raise SystemExit(
+                f"cannot normalize round-{round_number:02d}: legacy {event} timestamp conflicts with {slot}"
+            )
+
+        agent_id = str(assignment.get("agent_id") or "")
+        if str(legacy_event.get("agent_id") or "") != agent_id:
+            raise SystemExit(
+                f"cannot normalize round-{round_number:02d}: legacy {event} agent_id conflicts with {slot}"
+            )
+        legacy_summary = str(legacy_event.get("summary") or "")
+        if event == "result":
+            result_summary = str(assignment.get("result_summary") or "")
+            if legacy_summary != result_summary:
+                raise SystemExit(
+                    f"cannot normalize round-{round_number:02d}: legacy result summary conflicts with {slot}"
+                )
+            summary = result_summary
+        else:
+            summary = legacy_summary
+        canonical = event_content(
+            round_number,
+            slot,
+            event,
+            status=status,
+            agent_id=agent_id,
+            summary=summary,
+        )
+        canonical_events.append({**canonical, "recorded_at": recorded_at})
+
+    missing_lifecycle = expected_lifecycle - seen_lifecycle
+    if missing_lifecycle:
+        event, slot = sorted(missing_lifecycle)[0]
+        raise SystemExit(
+            f"cannot normalize round-{round_number:02d}: missing legacy {event} event for {slot}; "
+            "event content derivation is ambiguous"
+        )
+
+    synthesis_timestamp = validate_legacy_synthesis_evidence(round_doc, round_number)
+    if synthesis_timestamp is not None:
+        synthesis = validate_synthesis_payload(round_doc.get("synthesis"))
+        digest = canonical_json_digest(synthesis)
+        synthesis_event = event_content(
+            round_number,
+            "round",
+            "synthesis",
+            summary=f"fields={','.join(sorted(synthesis))}",
+            content_digest=digest,
+            migrated_snapshot=True,
+        )
+        canonical_events.append({**synthesis_event, "recorded_at": synthesis_timestamp})
+
+    round_status = str(round_doc.get("status") or "")
+    if round_status in TERMINAL_ROUND_STATES:
+        finalized_at = require_legacy_timestamp(
+            round_doc.get("finalized_at"),
+            round_number,
+            "finalized_at",
+        )
+        synthesis = round_doc.get("synthesis")
+        if not isinstance(synthesis, dict):
+            raise SystemExit(f"round-{round_number:02d} synthesis must be an object")
+        decision = str(synthesis.get("next_round_decision") or "")
+        blocked = round_status == "blocked"
+        summary_field = "stop_reason" if blocked or decision == "stop" else "next_round_question"
+        finalization = event_content(
+            round_number,
+            "round",
+            "finalize",
+            status=round_status,
+            summary=str(synthesis.get(summary_field) or ""),
+            decision=decision,
+            blocked=blocked,
+        )
+        canonical_events.append({**finalization, "recorded_at": finalized_at})
+    elif round_doc.get("finalized_at") not in (None, ""):
+        raise SystemExit(
+            f"cannot normalize round-{round_number:02d}: finalized_at exists for non-terminal status"
+        )
+
+    normalized["events"] = canonical_events
+    normalized["updated_at"] = canonical_events[-1]["recorded_at"]
+    return normalized
+
+
+def normalize_legacy_rounds(run_dir: Path) -> None:
+    for path in round_json_paths(run_dir):
+        round_doc = read_json(path)
+        if not isinstance(round_doc, dict):
+            raise SystemExit(f"round JSON must contain an object: {path}")
+        normalized = normalize_legacy_round(round_doc)
+        if normalized is not None:
+            write_json_atomic(path, normalized)
+
+
+def load_all_rounds(run_dir: Path) -> list[dict[str, Any]]:
+    rounds: list[dict[str, Any]] = []
+    for path in round_json_paths(run_dir):
+        item = read_json(path)
+        if not isinstance(item, dict):
+            raise SystemExit(f"round JSON must contain an object: {path}")
+        rounds.append(item)
+    return rounds
+
+
+def load_followup_rounds(run_dir: Path) -> list[dict[str, Any]]:
+    return [
+        round_doc
+        for round_doc in load_all_rounds(run_dir)
+        if int(round_doc["round"]) >= 2
+    ]
+
+
+def canonical_target(run_dir: Path, target_id: str) -> dict[str, Any]:
+    matches = [
+        item
+        for round_doc in load_all_rounds(run_dir)
+        for item in (round_doc.get("synthesis") or {}).get("cross_review_targets", [])
+        if item.get("target_id") == target_id
+    ]
+    if len(matches) != 1:
+        raise SystemExit(f"expected one canonical target {target_id!r}")
+    return matches[0]
+
+
+def completed_review_count(run_dir: Path, target_id: str) -> int:
+    return sum(
+        1
+        for round_doc in load_followup_rounds(run_dir)
+        for assignment in round_doc.get("assignments", [])
+        if assignment.get("target_id") == target_id
+        and assignment.get("result_status") == "completed"
+    )
+
+
+def last_outcome(run_dir: Path, target_id: str) -> str:
+    status = ""
+    for round_doc in load_followup_rounds(run_dir):
+        for outcome in (round_doc.get("synthesis") or {}).get("cross_review_outcomes", []):
+            if outcome.get("target_id") == target_id:
+                status = str(outcome.get("status") or "")
+    return status
+
+
+def pending_backlog_from_rounds(rounds: list[dict[str, Any]]) -> list[str]:
+    targets: list[str] = []
+    origins: dict[str, int] = {}
+    for round_doc in rounds:
+        synthesis = round_doc.get("synthesis") or {}
+        for item in synthesis.get("cross_review_targets", []):
+            target_id = str(item.get("target_id") or "")
+            if target_id in origins:
+                raise SystemExit(f"duplicate canonical target {target_id!r}")
+            origins[target_id] = int(round_doc["round"])
+            if item.get("disposition") == "pending":
+                targets.append(target_id)
+        outcomes = {
+            item["target_id"]: item["status"]
+            for item in synthesis.get("cross_review_outcomes", [])
+        }
+        targets = [
+            target_id
+            for target_id in targets
+            if outcomes.get(target_id) not in RESOLVED_OUTCOMES
+        ]
+    return targets
+
+
+def pending_backlog(run_dir: Path) -> list[str]:
+    return pending_backlog_from_rounds(load_all_rounds(run_dir))
+
+
+def initial_review_quota(run_dir: Path, target_id: str) -> int:
+    policy = canonical_target(run_dir, target_id)["review_policy"]
+    try:
+        return INITIAL_REVIEW_QUOTAS[policy]
+    except KeyError:
+        raise SystemExit(f"target {target_id!r} has invalid review_policy {policy!r}") from None
+
+
+def seats_required(run_dir: Path, target_id: str) -> int:
+    initial_quota = initial_review_quota(run_dir, target_id)
+    used = completed_review_count(run_dir, target_id)
+    if used == 0:
+        return initial_quota
+    if last_outcome(run_dir, target_id) == "unresolved" and used == initial_quota:
+        return 1
+    return 0
+
+
+def expected_followup_batch(run_dir: Path) -> list[tuple[str, int]]:
+    selected: list[tuple[str, int]] = []
+    used = 0
+    for target_id in pending_backlog(run_dir):
+        seats = seats_required(run_dir, target_id)
+        if seats == 0:
+            raise SystemExit(
+                f"target {target_id!r} exhausted textual review; resolve or externalize it"
+            )
+        if used + seats > FOLLOWUP_SEAT_LIMIT:
+            break
+        selected.append((target_id, seats))
+        used += seats
+    return selected
+
+
+def has_external_verification(rounds: list[dict[str, Any]]) -> bool:
+    for round_doc in rounds:
+        synthesis = round_doc.get("synthesis") or {}
+        if any(
+            item.get("disposition") == "external_verification"
+            for item in synthesis.get("cross_review_targets", [])
+        ):
+            return True
+        if any(
+            item.get("status") == "external-verification"
+            for item in synthesis.get("cross_review_outcomes", [])
+        ):
+            return True
+    return False
+
+
+def require_unused_spawned_agent_id(
+    run_dir: Path,
+    round_number: int,
+    slot: str,
+    agent_id: str,
+) -> None:
+    for stored_round in load_all_rounds(run_dir):
+        for event in stored_round.get("events", []):
+            if (
+                event.get("event") == "spawn"
+                and event.get("status") == "spawned"
+                and event.get("agent_id") == agent_id
+                and (
+                    int(stored_round["round"]) != round_number
+                    or event.get("slot") != slot
+                )
+            ):
+                raise SystemExit(
+                    f"spawned agent_id {agent_id!r} is already recorded for "
+                    f"round {stored_round['round']} slot {event.get('slot')!r}"
+                )
+
+
+def adaptive_gate_and_decision(
+    round_number: int,
+    backlog: list[str],
+    has_external: bool,
+) -> tuple[str, str]:
+    if backlog:
+        return (
+            "needs_cross_review",
+            "continue_round_2" if round_number == 1 else "ask_user",
+        )
+    if has_external:
+        return "external_verification", "stop"
+    return "clear", "stop"
+
+
+def derive_dynamic_state(
+    state: dict[str, Any],
+    rounds: list[dict[str, Any]],
+) -> dict[str, Any]:
+    if not rounds:
+        return {
+            "status": "initialized",
+            "current_round": 1,
+            "last_finalized_round": 0,
+            "next_action": "prepare_round",
+            "updated_at": state.get("updated_at") or state["created_at"],
+        }
+    latest = rounds[-1]
+    finalized = [item for item in rounds if item.get("status") == "finalized"]
+    if latest.get("status") == "blocked":
+        status, next_action = "blocked", "blocked"
+    elif latest.get("status") == "finalized":
+        decision = (latest.get("synthesis") or {}).get("next_round_decision")
+        if decision == "stop":
+            status, next_action = "complete", "complete"
+        elif decision == "ask_user":
+            status, next_action = "awaiting_user", "ask_user"
+        else:
+            status, next_action = "round_finalized", "prepare_round"
+    else:
+        counts = round_counts(latest)
+        expected = expected_agents(latest)
+        if counts["planned_dispatches"]:
+            next_action = "resolve_planned_dispatch"
+        elif has_lifecycle_failure(latest) and counts["open_spawned"]:
+            next_action = "close_workers"
+        elif has_lifecycle_failure(latest):
+            next_action = "finalize_blocked_round"
+        elif counts["results"] == expected and counts["closed"] == expected:
+            next_action = "synthesize_round"
+        elif counts["results"] == expected:
+            next_action = "close_workers"
+        else:
+            next_action = "continue_lifecycle"
+        status = "round_in_progress"
+    return {
+        "status": status,
+        "current_round": int(latest["round"]),
+        "last_finalized_round": max(
+            (int(item["round"]) for item in finalized),
+            default=0,
+        ),
+        "next_action": next_action,
+        "updated_at": latest.get("updated_at") or state.get("updated_at") or state["created_at"],
+    }
+
+
+def render_ledger_event(round_number: int, event: dict[str, Any]) -> str:
+    fields = [
+        str(event["recorded_at"]),
+        str(event["event_id"]),
+        f"round-{round_number:02d}",
+        str(event["event"]),
+    ]
+    for key in ("slot", "status", "agent_id", "summary"):
+        value = event.get(key)
+        if value not in (None, ""):
+            fields.append(f"{key}={value}")
+    return " | ".join(fields)
+
+
+def render_ledger(state: dict[str, Any], rounds: list[dict[str, Any]]) -> str:
+    lines = ["# Multi-Agent Analysis Ledger", "", f"Run ID: {state['run_id']}", ""]
+    for round_doc in rounds:
+        for event in round_doc.get("events", []):
+            lines.append(render_ledger_event(int(round_doc["round"]), event))
+    return "\n".join(lines) + "\n"
+
+
+def reconcile_run(run_dir: Path) -> None:
+    normalize_legacy_rounds(run_dir)
+    state = read_json(run_dir / "state.json")
+    if not isinstance(state, dict):
+        raise SystemExit("state.json must contain an object")
+    rounds = load_all_rounds(run_dir)
+    derived = derive_dynamic_state(state, rounds)
+    write_json_atomic(run_dir / "state.json", {**state, **derived})
+    for round_doc in rounds:
+        write_text_atomic(
+            run_dir / f"round-{round_doc['round']:02d}.md",
+            render_round_markdown(round_doc),
+        )
+    write_text_atomic(run_dir / "ledger.md", render_ledger(state, rounds))
+
+
 def load_state(run_dir: Path) -> dict[str, Any]:
     state = read_json(run_dir / "state.json")
     if not isinstance(state, dict):
@@ -448,11 +1307,26 @@ def load_state(run_dir: Path) -> dict[str, Any]:
     return state
 
 
-def write_round(run_dir: Path, round_doc: dict[str, Any]) -> None:
+def publish_round_mutation(command: str, run_dir: Path, round_doc: dict[str, Any]) -> None:
     round_number = int(round_doc["round"])
     round_stem = f"round-{round_number:02d}"
-    write_json(run_dir / f"{round_stem}.json", round_doc)
-    (run_dir / f"{round_stem}.md").write_text(render_round_markdown(round_doc), encoding="utf-8")
+    write_json_atomic(run_dir / f"{round_stem}.json", round_doc)
+    maybe_fail(command, "after-round-json")
+
+    rounds = load_all_rounds(run_dir)
+    for item in rounds:
+        write_text_atomic(
+            run_dir / f"round-{item['round']:02d}.md",
+            render_round_markdown(item),
+        )
+    maybe_fail(command, "after-round-markdown")
+
+    state = load_state(run_dir)
+    write_json_atomic(run_dir / "state.json", {**state, **derive_dynamic_state(state, rounds)})
+    maybe_fail(command, "after-state")
+
+    write_text_atomic(run_dir / "ledger.md", render_ledger(state, rounds))
+    maybe_fail(command, "after-ledger")
 
 
 def load_round(run_dir: Path, round_number: int) -> dict[str, Any]:
@@ -489,7 +1363,13 @@ def round_counts(round_doc: dict[str, Any]) -> dict[str, int]:
     return {
         "assignments": len(assignments),
         "spawned": sum(1 for item in assignments if item.get("spawn_status") == "spawned"),
+        "planned_dispatches": sum(
+            1 for item in assignments if item.get("spawn_status") == "planned"
+        ),
         "spawn_failures": sum(1 for item in assignments if item.get("spawn_status") == "failed"),
+        "unknown_dispatches": sum(
+            1 for item in assignments if item.get("spawn_status") == "unknown"
+        ),
         "results": sum(1 for item in assignments if item.get("result_status") == "completed"),
         "result_failures": sum(1 for item in assignments if item.get("result_status") == "failed"),
         "closed": sum(1 for item in assignments if item.get("close_status") == "closed"),
@@ -503,18 +1383,21 @@ def round_counts(round_doc: dict[str, Any]) -> dict[str, int]:
     }
 
 
+def expected_agents(round_doc: dict[str, Any]) -> int:
+    return int(round_doc.get("expected_agents") or len(round_doc.get("assignments", [])))
+
+
 def lifecycle_complete(round_doc: dict[str, Any]) -> bool:
     counts = round_counts(round_doc)
-    return (
-        counts["results"] == EXPECTED_AGENTS_PER_ROUND
-        and counts["closed"] == EXPECTED_AGENTS_PER_ROUND
-    )
+    expected = expected_agents(round_doc)
+    return counts["results"] == expected and counts["closed"] == expected
 
 
 def has_lifecycle_failure(round_doc: dict[str, Any]) -> bool:
     counts = round_counts(round_doc)
     return (
         counts["spawn_failures"] > 0
+        or counts["unknown_dispatches"] > 0
         or counts["result_failures"] > 0
         or counts["close_failures"] > 0
     )
@@ -530,12 +1413,17 @@ def require_mutable_round(run_dir: Path, round_doc: dict[str, Any]) -> None:
         )
 
 
-def validate_round_decision(round_number: int, decision: str, round_cap: int) -> None:
+def validate_round_decision(
+    round_number: int,
+    decision: str,
+    round_cap: int,
+    protocol: str,
+) -> None:
     if decision == "continue_round_2" and round_number != 1:
         raise SystemExit("continue_round_2 is only valid when finalizing round 1")
     if decision == "ask_user" and round_number < 2:
         raise SystemExit("ask_user is only valid when finalizing round 2 or later")
-    if decision == "ask_user" and round_number >= round_cap:
+    if protocol == LEGACY_PROTOCOL and decision == "ask_user" and round_number >= round_cap:
         raise SystemExit(f"round {round_number} is the round cap; decision must be stop")
 
 
@@ -563,6 +1451,89 @@ def validate_object_list(value: Any, key: str, fields: list[str]) -> list[dict[s
             row[field] = require_text(item.get(field), f"{key}.{field}", index)
         output.append(row)
     return output
+
+
+def validate_objective_alignment(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise SystemExit("objective_alignment must be an object")
+    if set(value) != OBJECTIVE_ALIGNMENT_FIELDS:
+        raise SystemExit("objective_alignment must contain exactly status, rationale, unmet_requirements")
+
+    status = value.get("status")
+    if not isinstance(status, str) or status not in OBJECTIVE_ALIGNMENT_STATUSES:
+        raise SystemExit("objective_alignment status is invalid")
+
+    rationale = value.get("rationale")
+    if not isinstance(rationale, str) or not rationale.strip():
+        raise SystemExit("objective_alignment rationale must be a non-empty string")
+
+    unmet_requirements = value.get("unmet_requirements")
+    if not isinstance(unmet_requirements, list):
+        raise SystemExit("objective_alignment unmet_requirements must be an array")
+    for index, item in enumerate(unmet_requirements, start=1):
+        if not isinstance(item, str) or not item.strip():
+            raise SystemExit(
+                f"objective_alignment unmet_requirements item {index} must be a non-empty string"
+            )
+
+    if status == "aligned" and unmet_requirements:
+        raise SystemExit("objective_alignment aligned status requires no unmet_requirements")
+    if status == "needs_revision" and not unmet_requirements:
+        raise SystemExit("objective_alignment needs_revision status requires unmet_requirements")
+
+    return {
+        "status": status,
+        "rationale": rationale,
+        "unmet_requirements": unmet_requirements,
+    }
+
+
+def validate_adaptive_targets(
+    value: Any,
+    critical_disagreements: Any,
+) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        raise SystemExit("synthesis field 'cross_review_targets' must be an array")
+    disagreements = critical_disagreements if isinstance(critical_disagreements, list) else []
+    targets: list[dict[str, Any]] = []
+    for index, item in enumerate(value, start=1):
+        if not isinstance(item, dict):
+            raise SystemExit(f"synthesis field 'cross_review_targets' item {index} must be an object")
+        target: dict[str, Any] = {}
+        for field in ADAPTIVE_CROSS_REVIEW_TARGET_FIELDS:
+            if field == "conflict_ref":
+                if field not in item:
+                    raise SystemExit(
+                        f"synthesis field 'cross_review_targets' item {index} "
+                        "must include conflict_ref"
+                    )
+                target[field] = item.get(field)
+            else:
+                target[field] = require_text(
+                    item.get(field),
+                    f"cross_review_targets.{field}",
+                    index,
+                )
+        if target["disposition"] not in CROSS_REVIEW_TARGET_DISPOSITIONS:
+            raise SystemExit("cross_review_targets disposition is invalid")
+        policy = target["review_policy"]
+        conflict_ref = target["conflict_ref"]
+        if policy == "single":
+            if conflict_ref is not None:
+                raise SystemExit("single review_policy requires conflict_ref null")
+        elif policy == "dual":
+            match = re.fullmatch(r"critical_disagreements\[(\d+)\]", str(conflict_ref or ""))
+            if match is None:
+                raise SystemExit(
+                    "dual review_policy requires conflict_ref critical_disagreements[N]"
+                )
+            conflict_index = int(match.group(1))
+            if conflict_index >= len(disagreements):
+                raise SystemExit("dual review_policy conflict_ref does not exist in this synthesis")
+        else:
+            raise SystemExit("cross_review_targets review_policy must be 'single' or 'dual'")
+        targets.append(target)
+    return targets
 
 
 def target_ids_from_targets(targets: Any) -> set[str]:
@@ -595,7 +1566,9 @@ def target_ids_with_disposition(targets: Any, disposition: str) -> set[str]:
     return ids
 
 
-def require_synthesis_ready(round_doc: dict[str, Any]) -> None:
+def require_synthesis_ready(
+    round_doc: dict[str, Any], *, require_objective_alignment: bool = True
+) -> None:
     synthesis = round_doc.get("synthesis")
     if not isinstance(synthesis, dict):
         raise SystemExit("cannot finalize complete round before synthesis is populated")
@@ -607,6 +1580,8 @@ def require_synthesis_ready(round_doc: dict[str, Any]) -> None:
         missing.append("action_list")
     if not non_empty_text(synthesis.get("expected_value_of_another_round")):
         missing.append("expected_value_of_another_round")
+    if require_objective_alignment and "objective_alignment" not in synthesis:
+        missing.append("objective_alignment")
 
     if missing:
         raise SystemExit(
@@ -614,29 +1589,40 @@ def require_synthesis_ready(round_doc: dict[str, Any]) -> None:
             + ", ".join(missing)
         )
 
+    if "objective_alignment" in synthesis:
+        validate_objective_alignment(synthesis["objective_alignment"])
 
-def synthesis_is_ready(round_doc: dict[str, Any]) -> bool:
+
+def synthesis_is_ready(
+    round_doc: dict[str, Any], *, require_objective_alignment: bool = True
+) -> bool:
     try:
-        require_synthesis_ready(round_doc)
+        require_synthesis_ready(
+            round_doc,
+            require_objective_alignment=require_objective_alignment,
+        )
     except SystemExit:
         return False
     return True
 
 
-def validate_synthesis_payload(raw: Any) -> dict[str, Any]:
+def validate_synthesis_payload(raw: Any, *, adaptive: bool = False) -> dict[str, Any]:
     if not isinstance(raw, dict):
         raise SystemExit("synthesis JSON must contain an object")
 
     allowed = (
         set(SYNTHESIS_LIST_FIELDS)
         | set(SYNTHESIS_TEXT_FIELDS)
-        | {"cross_review_targets", "cross_review_outcomes"}
+        | {"cross_review_targets", "cross_review_outcomes", "objective_alignment"}
     )
     unknown = set(raw) - allowed
     if unknown:
         raise SystemExit(f"synthesis JSON has unknown fields: {', '.join(sorted(unknown))}")
-
     validated: dict[str, Any] = {}
+    if "objective_alignment" in raw:
+        validated["objective_alignment"] = validate_objective_alignment(
+            raw["objective_alignment"]
+        )
     for key in SYNTHESIS_LIST_FIELDS:
         if key not in raw:
             continue
@@ -671,10 +1657,16 @@ def validate_synthesis_payload(raw: Any) -> dict[str, Any]:
             continue
         value = raw[key]
         if key == "cross_review_targets":
-            targets = validate_object_list(value, key, CROSS_REVIEW_TARGET_FIELDS)
-            for item in targets:
-                if item["disposition"] not in CROSS_REVIEW_TARGET_DISPOSITIONS:
-                    raise SystemExit("cross_review_targets disposition is invalid")
+            if adaptive:
+                targets = validate_adaptive_targets(
+                    value,
+                    raw.get("critical_disagreements", []),
+                )
+            else:
+                targets = validate_object_list(value, key, CROSS_REVIEW_TARGET_FIELDS)
+                for item in targets:
+                    if item["disposition"] not in CROSS_REVIEW_TARGET_DISPOSITIONS:
+                        raise SystemExit("cross_review_targets disposition is invalid")
             validated[key] = targets
         else:
             outcomes = validate_object_list(value, key, CROSS_REVIEW_OUTCOME_FIELDS)
@@ -684,14 +1676,6 @@ def validate_synthesis_payload(raw: Any) -> dict[str, Any]:
             validated[key] = outcomes
 
     return validated
-
-
-def update_state(run_dir: Path, **updates: Any) -> dict[str, Any]:
-    state = load_state(run_dir)
-    state.update(updates)
-    state["updated_at"] = now_iso()
-    write_json(run_dir / "state.json", state)
-    return state
 
 
 def previous_round_pending_targets(run_dir: Path, round_number: int) -> set[str]:
@@ -726,217 +1710,639 @@ def validate_cross_review_round_assignments(
         raise SystemExit("round 2 assignments do not cover cross-review target ids: " + ", ".join(sorted(missing)))
 
 
-def command_prepare_round(args: argparse.Namespace) -> int:
-    run_dir = Path(args.run_dir)
-    state_path = run_dir / "state.json"
-    if not run_dir.is_dir():
-        raise SystemExit(f"run directory does not exist: {run_dir}")
-
-    state = load_state(run_dir)
-    if state.get("status") in TERMINAL_RUN_STATES or state.get("next_action") in TERMINAL_RUN_STATES:
+def validate_adaptive_followup_assignments(
+    run_dir: Path,
+    assignments: list[dict[str, Any]],
+    batch: list[tuple[str, int]],
+) -> tuple[list[dict[str, Any]], list[str]]:
+    expected_target_ids = [
+        target_id
+        for target_id, seats in batch
+        for _ in range(seats)
+    ]
+    actual_slots = [str(item.get("slot")) for item in assignments]
+    expected_slots = [f"C{index}" for index in range(1, len(expected_target_ids) + 1)]
+    if actual_slots != expected_slots:
         raise SystemExit(
-            f"cannot prepare another round because run status is {state.get('status')!r}"
+            "adaptive follow-up slots must be consecutive from C1 through "
+            f"C{len(expected_slots)}"
+        )
+    actual_target_ids = [
+        require_text(item.get("target_id"), "target_id", index)
+        for index, item in enumerate(assignments, start=1)
+    ]
+    if actual_target_ids != expected_target_ids:
+        raise SystemExit(
+            "adaptive follow-up assignments must exactly match the expected complete target bundles"
         )
 
-    round_number = args.round
-    round_cap = int(state.get("round_cap", ROUND_CAP))
-    if round_number < 1:
-        raise SystemExit("round must be at least 1")
-    if round_number > round_cap:
-        raise SystemExit(f"round {round_number} exceeds round cap {round_cap}")
-    if round_number >= 3 and not args.user_approved:
-        raise SystemExit(f"round {round_number} requires user approval")
+    enriched: list[dict[str, Any]] = []
+    for item, target_id in zip(assignments, actual_target_ids):
+        target = canonical_target(run_dir, target_id)
+        canonical_fields = {
+            key: target.get(key)
+            for key in ("source_slot", "claim", "review_policy", "conflict_ref")
+        }
+        for key, value in canonical_fields.items():
+            if key in item and item.get(key) != value:
+                raise SystemExit(
+                    f"assignment {item['slot']} {key} conflicts with canonical target {target_id!r}"
+                )
+        enriched.append({**item, **canonical_fields})
+    return enriched, [target_id for target_id, _ in batch]
 
-    round_stem = f"round-{round_number:02d}"
-    round_json = run_dir / f"{round_stem}.json"
-    round_markdown = run_dir / f"{round_stem}.md"
-    if round_json.exists() or round_markdown.exists():
-        raise SystemExit(f"{round_stem} already exists; refusing to overwrite")
 
-    last_finalized = int(state.get("last_finalized_round", 0))
-    if round_number == 1:
-        if last_finalized != 0:
-            raise SystemExit("round 1 cannot be prepared after a finalized round")
-    elif round_number != last_finalized + 1:
-        raise SystemExit(f"round {round_number} requires round {round_number - 1} finalized first")
+def adaptive_prepare_replay_plan(
+    round_doc: dict[str, Any],
+    assignments: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[str], list[str]]:
+    stored_assignments = round_doc.get("assignments")
+    incoming = round_doc.get("incoming_backlog_ids")
+    active = round_doc.get("active_target_ids")
+    if not isinstance(stored_assignments, list):
+        raise SystemExit("adaptive replay round assignments must be an array")
+    if not isinstance(incoming, list) or not all(isinstance(item, str) for item in incoming):
+        raise SystemExit("adaptive replay incoming_backlog_ids must be a string array")
+    if not isinstance(active, list) or not all(isinstance(item, str) for item in active):
+        raise SystemExit("adaptive replay active_target_ids must be a string array")
+    if len(assignments) != len(stored_assignments):
+        raise SystemExit("conflicting adaptive prepare replay assignment count")
 
-    assignments = validate_assignments(
-        read_json(Path(args.assignments)),
-        str(state.get("mode")),
-        round_number,
-    )
-    required_target_ids = previous_round_pending_targets(run_dir, round_number)
-    validate_cross_review_round_assignments(assignments, required_target_ids)
-    created_at = now_iso()
-    round_doc = {
+    stored_slots = [str(item.get("slot")) for item in stored_assignments]
+    expected_slots = [f"C{index}" for index in range(1, len(stored_assignments) + 1)]
+    if stored_slots != expected_slots:
+        raise SystemExit("stored adaptive follow-up slots are not consecutive")
+    stored_target_ids = [str(item.get("target_id") or "") for item in stored_assignments]
+    stored_active = list(dict.fromkeys(stored_target_ids))
+    if not all(stored_target_ids) or stored_active != active:
+        raise SystemExit("stored adaptive assignments conflict with active_target_ids")
+    if any(target_id not in incoming for target_id in active):
+        raise SystemExit("stored active_target_ids are not present in incoming_backlog_ids")
+
+    canonical_fields = ("source_slot", "claim", "review_policy", "conflict_ref")
+    enriched: list[dict[str, Any]] = []
+    for requested, stored in zip(assignments, stored_assignments):
+        for key in canonical_fields:
+            if key in requested and requested.get(key) != stored.get(key):
+                raise SystemExit(
+                    f"assignment {requested['slot']} {key} conflicts with stored adaptive plan"
+                )
+        enriched.append(
+            {
+                **requested,
+                **{key: stored.get(key) for key in canonical_fields},
+            }
+        )
+    return enriched, list(incoming), list(active)
+
+
+def validate_adaptive_target_origins(
+    run_dir: Path,
+    round_doc: dict[str, Any],
+    introduced_targets: list[dict[str, Any]],
+    canonical_targets: list[dict[str, Any]],
+) -> None:
+    if int(round_doc["round"]) >= 2 and len(canonical_targets) > 1:
+        raise SystemExit("adaptive follow-up synthesis may introduce at most one new canonical target")
+
+    prior_ids = {
+        str(item.get("target_id"))
+        for stored_round in load_all_rounds(run_dir)
+        for item in (stored_round.get("synthesis") or {}).get("cross_review_targets", [])
+        if item.get("target_id")
+    }
+    new_ids: set[str] = set()
+    for target in introduced_targets:
+        target_id = str(target["target_id"])
+        if target_id in prior_ids or target_id in new_ids:
+            raise SystemExit(f"duplicate canonical target {target_id!r}")
+        new_ids.add(target_id)
+        source_slot = str(target["source_slot"])
+        assignment = find_assignment(round_doc, source_slot)
+        if assignment.get("spawn_status") != "spawned":
+            raise SystemExit(
+                f"target {target_id!r} source_slot {source_slot!r} was not spawned"
+            )
+        if assignment.get("result_status") != "completed":
+            raise SystemExit(
+                f"target {target_id!r} source_slot {source_slot!r} has no completed result"
+            )
+
+
+def adaptive_correction_target_additions(
+    synthesis: dict[str, Any],
+    payload: dict[str, Any],
+) -> list[dict[str, Any]]:
+    if "cross_review_targets" not in payload:
+        return []
+    proposed = payload["cross_review_targets"]
+    existing = synthesis.get("cross_review_targets", [])
+    if not isinstance(existing, list):
+        raise SystemExit("canonical cross_review_targets must be an array")
+    if proposed[: len(existing)] != existing:
+        raise SystemExit(
+            "adaptive synthesis correction cannot remove, reorder, replace, or mutate "
+            "canonical cross_review_targets"
+        )
+    return proposed[len(existing) :]
+
+
+def validate_adaptive_outcomes(round_doc: dict[str, Any], outcomes: Any) -> None:
+    active_target_ids = [str(item) for item in round_doc.get("active_target_ids", [])]
+    if not active_target_ids:
+        if outcomes:
+            raise SystemExit(
+                "adaptive synthesis cannot record target outcomes without active target ids"
+            )
+        return
+    if not isinstance(outcomes, list):
+        raise SystemExit("adaptive follow-up synthesis must include cross_review_outcomes")
+    outcome_ids = [str(item.get("target_id")) for item in outcomes]
+    if len(outcome_ids) != len(set(outcome_ids)):
+        raise SystemExit("adaptive follow-up outcomes must contain each active target exactly once")
+    if set(outcome_ids) != set(active_target_ids) or len(outcome_ids) != len(active_target_ids):
+        raise SystemExit("adaptive follow-up outcomes must match exactly the active target ids")
+
+
+def reject_exhausted_unresolved_outcomes(
+    run_dir: Path,
+    outcomes: list[dict[str, Any]],
+) -> None:
+    for outcome in outcomes:
+        if outcome.get("status") != "unresolved":
+            continue
+        target_id = str(outcome["target_id"])
+        used = completed_review_count(run_dir, target_id)
+        textual_limit = initial_review_quota(run_dir, target_id) + 1
+        if used >= textual_limit:
+            raise SystemExit(
+                f"target {target_id!r} exhausted textual review; outcome must be "
+                "accepted, modified, rejected, or external-verification"
+            )
+
+
+def rounds_with_candidate(
+    run_dir: Path,
+    candidate: dict[str, Any],
+) -> list[dict[str, Any]]:
+    round_number = int(candidate["round"])
+    return [
+        candidate if int(item["round"]) == round_number else item
+        for item in load_all_rounds(run_dir)
+    ]
+
+
+ASSIGNMENT_LIFECYCLE_FIELDS = {
+    "agent_id",
+    "spawn_status",
+    "spawn_planned_at",
+    "spawn_recorded_at",
+    "result_status",
+    "result_summary",
+    "result_recorded_at",
+    "close_status",
+    "close_recorded_at",
+}
+
+
+def planned_assignments(
+    assignments: list[dict[str, Any]], state: dict[str, Any]
+) -> list[dict[str, Any]]:
+    planned_items: list[dict[str, Any]] = []
+    tooling = state.get("tooling", {})
+    for item in assignments:
+        planned = {
+            key: value
+            for key, value in item.items()
+            if key not in ASSIGNMENT_LIFECYCLE_FIELDS
+        }
+        planned["agent_id"] = None
+        planned.setdefault("spawn_tool", tooling.get("spawn"))
+        planned.setdefault("wait_tool", tooling.get("wait"))
+        planned.setdefault("close_tool", tooling.get("close"))
+        planned["spawn_status"] = "pending"
+        planned["result_status"] = "pending"
+        planned["close_status"] = "pending"
+        planned["result_summary"] = ""
+        planned_items.append(planned)
+    return planned_items
+
+
+def assignment_plan(item: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: value
+        for key, value in item.items()
+        if key not in ASSIGNMENT_LIFECYCLE_FIELDS
+    }
+
+
+def round_plan_digest(assignments: list[dict[str, Any]]) -> str:
+    return canonical_json_digest([assignment_plan(item) for item in assignments])
+
+
+def preparation_summary(count: int, protocol: str) -> str:
+    if protocol == LEGACY_PROTOCOL:
+        return "prepared exactly six assignments"
+    return f"prepared {count} assignment{'s' if count != 1 else ''}"
+
+
+def require_prepare_replay(
+    round_doc: dict[str, Any],
+    state: dict[str, Any],
+    round_number: int,
+    assignments: list[dict[str, Any]],
+    incoming_backlog_ids: list[str],
+    active_target_ids: list[str],
+    protocol: str,
+) -> None:
+    expected_header = {
         "version": VERSION,
         "run_id": state.get("run_id"),
         "mode": state.get("mode"),
         "round": round_number,
-        "status": "planned",
-        "created_at": created_at,
-        "expected_agents": EXPECTED_AGENTS_PER_ROUND,
-        "assignments": [],
-        "synthesis": {
-            "convergence": [],
-            "disagreement": [],
-            "critical_disagreements": [],
-            "cannot_verify": [],
-            "high_impact_low_evidence": [],
-            "action_list": [],
-            "cross_review_gate_status": "",
-            "cross_review_targets": [],
-            "cross_review_outcomes": [],
-            "expected_value_of_another_round": "",
-            "next_round_decision": "",
-            "stop_reason": "",
-            "next_round_question": "",
-        },
+        "expected_agents": len(assignments),
     }
+    if any(round_doc.get(key) != value for key, value in expected_header.items()):
+        raise SystemExit(f"conflicting replay for round-{round_number:02d} preparation")
+    existing_plans = [assignment_plan(item) for item in round_doc.get("assignments", [])]
+    requested_plans = [assignment_plan(item) for item in assignments]
+    if existing_plans != requested_plans:
+        raise SystemExit(f"conflicting replay for round-{round_number:02d} preparation")
+    if round_doc.get("incoming_backlog_ids", []) != incoming_backlog_ids:
+        raise SystemExit(f"conflicting replay for round-{round_number:02d} preparation")
+    if round_doc.get("active_target_ids", []) != active_target_ids:
+        raise SystemExit(f"conflicting replay for round-{round_number:02d} preparation")
+    replay_summary = preparation_summary(len(assignments), protocol)
+    existing_prepare = find_event(round_doc, event_id(round_number, "round", "prepare"))
+    if (
+        existing_prepare is not None
+        and existing_prepare.get("summary") == "prepared exactly six assignments"
+    ):
+        replay_summary = "prepared exactly six assignments"
+    requested_event = event_content(
+        round_number,
+        "round",
+        "prepare",
+        status="planned",
+        summary=replay_summary,
+        plan_digest=round_plan_digest(assignments),
+    )
+    require_event_replay(round_doc, requested_event)
 
-    for item in assignments:
-        planned = dict(item)
-        planned.setdefault("agent_id", None)
-        planned.setdefault("spawn_tool", state.get("tooling", {}).get("spawn"))
-        planned.setdefault("wait_tool", state.get("tooling", {}).get("wait"))
-        planned.setdefault("close_tool", state.get("tooling", {}).get("close"))
-        planned.setdefault("spawn_status", "pending")
-        planned.setdefault("result_status", "pending")
-        planned.setdefault("close_status", "pending")
-        planned.setdefault("result_summary", "")
-        round_doc["assignments"].append(planned)
 
-    write_round(run_dir, round_doc)
+def command_prepare_round(args: argparse.Namespace) -> int:
+    run_dir = Path(args.run_dir)
+    if not run_dir.is_dir():
+        raise SystemExit(f"run directory does not exist: {run_dir}")
 
-    state["status"] = "round_planned"
-    state["current_round"] = round_number
-    state["next_action"] = "dispatch_round"
-    state["updated_at"] = created_at
-    write_json(state_path, state)
-    append_ledger(run_dir, f"prepared {round_stem} with exactly six assignments")
+    with run_lock(run_dir):
+        reconcile_run(run_dir)
+        state = load_state(run_dir)
+        round_number = args.round
+        protocol = protocol_version(state)
+        round_cap = int(state.get("round_cap", ROUND_CAP))
+        if round_number < 1:
+            raise SystemExit("round must be at least 1")
+        if protocol == LEGACY_PROTOCOL and round_number > round_cap:
+            raise SystemExit(f"round {round_number} exceeds round cap {round_cap}")
+        if round_number >= USER_APPROVAL_FROM_ROUND and not args.user_approved:
+            raise SystemExit(f"round {round_number} requires user approval")
 
-    print(run_dir / f"{round_stem}.json")
+        assignments = validate_assignments(
+            read_json(Path(args.assignments)),
+            str(state.get("mode")),
+            round_number,
+            protocol,
+            str(state.get("target_overlay") or ""),
+        )
+        round_stem = f"round-{round_number:02d}"
+        round_json = run_dir / f"{round_stem}.json"
+        incoming_backlog_ids: list[str] = []
+        active_target_ids: list[str] = []
+        if round_json.exists():
+            stored_round = load_round(run_dir, round_number)
+            if protocol == ADAPTIVE_PROTOCOL and round_number >= 2:
+                assignments, incoming_backlog_ids, active_target_ids = (
+                    adaptive_prepare_replay_plan(stored_round, assignments)
+                )
+            planned = planned_assignments(assignments, state)
+            require_prepare_replay(
+                stored_round,
+                state,
+                round_number,
+                planned,
+                incoming_backlog_ids,
+                active_target_ids,
+                protocol,
+            )
+            print(round_json)
+            return 0
+
+        if protocol == ADAPTIVE_PROTOCOL and round_number >= 2:
+            incoming_backlog_ids = pending_backlog(run_dir)
+            batch = expected_followup_batch(run_dir)
+            if not batch:
+                raise SystemExit("adaptive follow-up round requires a non-empty pending backlog")
+            assignments, active_target_ids = validate_adaptive_followup_assignments(
+                run_dir,
+                assignments,
+                batch,
+            )
+        planned = planned_assignments(assignments, state)
+
+        if state.get("status") in TERMINAL_RUN_STATES or state.get("next_action") in TERMINAL_RUN_STATES:
+            raise SystemExit(
+                f"cannot prepare another round because run status is {state.get('status')!r}"
+            )
+
+        last_finalized = int(state.get("last_finalized_round", 0))
+        if round_number == 1:
+            if last_finalized != 0:
+                raise SystemExit("round 1 cannot be prepared after a finalized round")
+        elif round_number != last_finalized + 1:
+            raise SystemExit(f"round {round_number} requires round {round_number - 1} finalized first")
+
+        if protocol == LEGACY_PROTOCOL:
+            required_target_ids = previous_round_pending_targets(run_dir, round_number)
+            validate_cross_review_round_assignments(assignments, required_target_ids)
+        created_at = now_iso()
+        prepare_event = event_content(
+            round_number,
+            "round",
+            "prepare",
+            status="planned",
+            summary=preparation_summary(len(planned), protocol),
+            plan_digest=round_plan_digest(planned),
+        )
+        round_doc = {
+            "version": VERSION,
+            "run_id": state.get("run_id"),
+            "mode": state.get("mode"),
+            "round": round_number,
+            "status": "planned",
+            "created_at": created_at,
+            "updated_at": created_at,
+            "expected_agents": len(planned),
+            "assignments": planned,
+            "synthesis": {
+                "convergence": [],
+                "disagreement": [],
+                "critical_disagreements": [],
+                "cannot_verify": [],
+                "high_impact_low_evidence": [],
+                "action_list": [],
+                "cross_review_gate_status": "",
+                "cross_review_targets": [],
+                "cross_review_outcomes": [],
+                "expected_value_of_another_round": "",
+                "next_round_decision": "",
+                "stop_reason": "",
+                "next_round_question": "",
+            },
+            "events": [{**prepare_event, "recorded_at": created_at}],
+        }
+        if protocol == ADAPTIVE_PROTOCOL and round_number >= 2:
+            round_doc["incoming_backlog_ids"] = incoming_backlog_ids
+            round_doc["active_target_ids"] = active_target_ids
+        publish_round_mutation("prepare-round", run_dir, round_doc)
+
+        print(round_json)
+    return 0
+
+
+def command_plan_dispatch(args: argparse.Namespace) -> int:
+    run_dir = Path(args.run_dir)
+    if not run_dir.is_dir():
+        raise SystemExit(f"run directory does not exist: {run_dir}")
+
+    with run_lock(run_dir):
+        reconcile_run(run_dir)
+        round_doc = load_round(run_dir, args.round)
+        assignment = find_assignment(round_doc, args.slot)
+        requested_event = event_content(
+            args.round,
+            args.slot,
+            "plan-dispatch",
+            status="planned",
+        )
+        if find_event(round_doc, str(requested_event["event_id"])) is not None:
+            require_event_replay(round_doc, requested_event)
+            print(run_dir / f"round-{args.round:02d}.json")
+            return 0
+        require_mutable_round(run_dir, round_doc)
+        current_status = assignment.get("spawn_status")
+        if current_status not in (None, "", "pending"):
+            raise SystemExit(
+                f"{args.slot} dispatch cannot be planned after spawn_status={current_status!r}"
+            )
+
+        timestamp = now_iso()
+        assignment["spawn_status"] = "planned"
+        assignment["spawn_planned_at"] = timestamp
+        append_canonical_event(round_doc, requested_event, timestamp)
+        round_doc["updated_at"] = timestamp
+        publish_round_mutation("plan-dispatch", run_dir, round_doc)
+        print(run_dir / f"round-{args.round:02d}.json")
     return 0
 
 
 def command_record(args: argparse.Namespace, event: str) -> int:
     run_dir = Path(args.run_dir)
-    round_doc = load_round(run_dir, args.round)
-    require_mutable_round(run_dir, round_doc)
-    assignment = find_assignment(round_doc, args.slot)
-    timestamp = now_iso()
-    status = validate_record_status(event, args.status)
+    if not run_dir.is_dir():
+        raise SystemExit(f"run directory does not exist: {run_dir}")
 
-    if event == "spawn":
-        if assignment.get("spawn_status") not in (None, "", "pending"):
-            raise SystemExit(f"{args.slot} already has spawn_status={assignment.get('spawn_status')!r}")
-        agent_id = args.agent_id.strip()
-        if status == "spawned" and not agent_id:
-            raise SystemExit(f"{args.slot} must record --agent-id when spawn status is 'spawned'")
-        if agent_id:
-            assignment["agent_id"] = agent_id
-        assignment["spawn_status"] = status
-        assignment["spawn_recorded_at"] = timestamp
-    elif event == "result":
-        if assignment.get("spawn_status") != "spawned":
-            raise SystemExit(f"{args.slot} cannot record a result unless spawn_status is 'spawned'")
-        if assignment.get("result_status") not in (None, "", "pending"):
-            raise SystemExit(f"{args.slot} already has result_status={assignment.get('result_status')!r}")
-        assignment["result_status"] = status
-        assignment["result_summary"] = args.summary or assignment.get("result_summary", "")
-        assignment["result_recorded_at"] = timestamp
-    elif event == "close":
-        if assignment.get("spawn_status") != "spawned":
-            raise SystemExit(f"{args.slot} cannot record close unless spawn_status is 'spawned'")
-        if assignment.get("result_status") in (None, "", "pending") and status == "closed":
+    with run_lock(run_dir):
+        reconcile_run(run_dir)
+        state = load_state(run_dir)
+        adaptive = protocol_version(state) == ADAPTIVE_PROTOCOL
+        round_doc = load_round(run_dir, args.round)
+        assignment = find_assignment(round_doc, args.slot)
+        status = validate_record_status(event, args.status)
+        summary = args.summary or ""
+        requested_agent_id = args.agent_id.strip()
+
+        if event == "spawn":
+            agent_id = requested_agent_id
+            status_field = "spawn_status"
+            if status == "planned":
+                raise SystemExit("use plan-dispatch to record planned dispatch intent")
+            if status == "spawned" and not agent_id:
+                raise SystemExit(f"{args.slot} must record --agent-id when spawn status is 'spawned'")
+            if status in {"failed", "unknown"} and agent_id:
+                raise SystemExit(
+                    f"{args.slot} must not record --agent-id when spawn status is {status!r}"
+                )
+        elif event in {"result", "close"}:
+            agent_id = requested_agent_id or str(assignment.get("agent_id") or "")
+            status_field = f"{event}_status"
+        else:
+            raise SystemExit(f"unknown record event: {event}")
+
+        requested_event = event_content(
+            args.round,
+            args.slot,
+            event,
+            status=status,
+            agent_id=agent_id,
+            summary=summary,
+        )
+        committed_statuses = (None, "", "pending", "planned") if event == "spawn" else (None, "", "pending")
+        if assignment.get(status_field) not in committed_statuses:
+            require_event_replay(round_doc, requested_event)
+            print(run_dir / f"round-{args.round:02d}.json")
+            return 0
+
+        require_mutable_round(run_dir, round_doc)
+        if event == "spawn" and adaptive and assignment.get("spawn_status") != "planned":
+            raise SystemExit(
+                f"{args.slot} adaptive dispatch must be planned before recording spawn status"
+            )
+        if event == "spawn" and status == "spawned":
+            require_unused_spawned_agent_id(run_dir, args.round, args.slot, agent_id)
+        if event in {"result", "close"}:
+            if assignment.get("spawn_status") != "spawned":
+                action = "a result" if event == "result" else "close"
+                raise SystemExit(
+                    f"{args.slot} cannot record {action} unless spawn_status is 'spawned'"
+                )
+            if requested_agent_id and requested_agent_id != assignment.get("agent_id"):
+                raise SystemExit(
+                    f"{args.slot} agent_id conflicts with the recorded spawn agent_id"
+                )
+        if event == "close" and assignment.get("result_status") in (None, "", "pending") and status == "closed":
             raise SystemExit(
                 f"{args.slot} cannot record successful close before result is recorded; "
                 "use status failed or cancelled for abnormal close"
             )
-        if assignment.get("close_status") not in (None, "", "pending"):
-            raise SystemExit(f"{args.slot} already has close_status={assignment.get('close_status')!r}")
-        assignment["close_status"] = status
-        assignment["close_recorded_at"] = timestamp
-    else:
-        raise SystemExit(f"unknown record event: {event}")
 
-    round_doc.setdefault("events", []).append(
-        {
-            "event": event,
-            "slot": args.slot,
-            "status": status,
-            "agent_id": assignment.get("agent_id"),
-            "summary": args.summary or "",
-            "recorded_at": timestamp,
-        }
-    )
-    write_round(run_dir, round_doc)
+        timestamp = now_iso()
+        if event == "spawn":
+            if agent_id:
+                assignment["agent_id"] = agent_id
+            assignment["spawn_status"] = status
+            assignment["spawn_recorded_at"] = timestamp
+        elif event == "result":
+            assignment["result_status"] = status
+            assignment["result_summary"] = summary
+            assignment["result_recorded_at"] = timestamp
+        else:
+            assignment["close_status"] = status
+            assignment["close_recorded_at"] = timestamp
 
-    counts = round_counts(round_doc)
-    has_failures = (
-        counts["spawn_failures"] > 0
-        or counts["result_failures"] > 0
-        or counts["close_failures"] > 0
-    )
-    if has_failures and counts["open_spawned"] > 0:
-        next_action = "close_workers"
-    elif has_failures:
-        next_action = "finalize_blocked_round"
-    elif counts["results"] == EXPECTED_AGENTS_PER_ROUND and counts["closed"] == EXPECTED_AGENTS_PER_ROUND:
-        next_action = "synthesize_round"
-    elif counts["results"] == EXPECTED_AGENTS_PER_ROUND:
-        next_action = "close_workers"
-    else:
-        next_action = "continue_lifecycle"
-    update_state(
-        run_dir,
-        status="round_in_progress",
-        current_round=args.round,
-        next_action=next_action,
-    )
-    append_ledger(
-        run_dir,
-        f"record-{event} round-{args.round:02d} {args.slot} status={status}"
-        + (f" agent_id={assignment.get('agent_id')}" if assignment.get("agent_id") else ""),
-    )
-    print(run_dir / f"round-{args.round:02d}.json")
+        append_canonical_event(round_doc, requested_event, timestamp)
+        round_doc["updated_at"] = timestamp
+        publish_round_mutation(f"record-{event}", run_dir, round_doc)
+
+        print(run_dir / f"round-{args.round:02d}.json")
     return 0
 
 
 def command_record_synthesis(args: argparse.Namespace) -> int:
     run_dir = Path(args.run_dir)
-    round_doc = load_round(run_dir, args.round)
-    require_mutable_round(run_dir, round_doc)
-    if not lifecycle_complete(round_doc):
-        counts = round_counts(round_doc)
-        raise SystemExit(
-            "cannot record synthesis before lifecycle completion "
-            f"(results={counts['results']}, closed={counts['closed']})"
+    if not run_dir.is_dir():
+        raise SystemExit(f"run directory does not exist: {run_dir}")
+
+    raw_payload = read_json(Path(args.synthesis))
+
+    with run_lock(run_dir):
+        reconcile_run(run_dir)
+        state = load_state(run_dir)
+        adaptive = protocol_version(state) == ADAPTIVE_PROTOCOL
+        payload = validate_synthesis_payload(raw_payload, adaptive=adaptive)
+        digest = canonical_json_digest(payload)
+        requested_event = event_content(
+            args.round,
+            "round",
+            "synthesis",
+            summary=f"fields={','.join(sorted(payload))}",
+            content_digest=digest,
         )
+        round_doc = load_round(run_dir, args.round)
+        synthesis_events = [
+            item for item in round_doc.get("events", []) if item.get("event") == "synthesis"
+        ]
+        has_canonical_correction = any(
+            item.get("migrated_snapshot") is not True for item in synthesis_events
+        )
+        existing_event = find_event(round_doc, str(requested_event["event_id"]))
+        if existing_event is not None:
+            if existing_event.get("migrated_snapshot") is True and has_canonical_correction:
+                raise SystemExit(
+                    "canonical synthesis correction already exists; replay its exact event payload"
+                )
+            require_event_replay(round_doc, requested_event)
+            synthesis = round_doc.get("synthesis")
+            if not isinstance(synthesis, dict) or any(
+                synthesis.get(key) != value for key, value in payload.items()
+            ):
+                raise SystemExit("conflicting replay for synthesis payload")
+            print(run_dir / f"round-{args.round:02d}.json")
+            return 0
 
-    payload = validate_synthesis_payload(read_json(Path(args.synthesis)))
-    synthesis = round_doc.setdefault("synthesis", {})
-    if not isinstance(synthesis, dict):
-        raise SystemExit("round synthesis must be an object")
-    synthesis.update(payload)
-    round_doc["synthesis_recorded_at"] = now_iso()
-    write_round(run_dir, round_doc)
+        require_mutable_round(run_dir, round_doc)
+        if not lifecycle_complete(round_doc):
+            counts = round_counts(round_doc)
+            raise SystemExit(
+                "cannot record synthesis before lifecycle completion "
+                f"(results={counts['results']}, closed={counts['closed']})"
+            )
 
-    if synthesis_is_ready(round_doc):
-        next_action = "finalize_round"
-    else:
-        next_action = "synthesize_round"
-    update_state(
-        run_dir,
-        status="round_in_progress",
-        current_round=args.round,
-        next_action=next_action,
-    )
-    append_ledger(
-        run_dir,
-        f"record-synthesis round-{args.round:02d} fields={','.join(sorted(payload))}",
-    )
-    print(run_dir / f"round-{args.round:02d}.json")
+        synthesis = round_doc.get("synthesis")
+        if not isinstance(synthesis, dict):
+            raise SystemExit("round synthesis must be an object")
+        merged_synthesis = {**synthesis, **payload}
+        if "objective_alignment" not in merged_synthesis:
+            raise SystemExit(
+                "new mutable synthesis must include objective_alignment"
+            )
+        merged_synthesis["objective_alignment"] = validate_objective_alignment(
+            merged_synthesis["objective_alignment"]
+        )
+        if adaptive:
+            introduced_targets = adaptive_correction_target_additions(synthesis, payload)
+            validate_adaptive_target_origins(
+                run_dir,
+                round_doc,
+                introduced_targets,
+                merged_synthesis.get("cross_review_targets", []),
+            )
+            validate_adaptive_outcomes(
+                round_doc,
+                merged_synthesis.get("cross_review_outcomes"),
+            )
+            if round_doc.get("active_target_ids"):
+                reject_exhausted_unresolved_outcomes(
+                    run_dir,
+                    merged_synthesis["cross_review_outcomes"],
+                )
+            candidate = {**round_doc, "synthesis": merged_synthesis}
+            candidate_rounds = rounds_with_candidate(run_dir, candidate)
+            backlog = pending_backlog_from_rounds(candidate_rounds)
+            gate_status, decision = adaptive_gate_and_decision(
+                args.round,
+                backlog,
+                has_external_verification(candidate_rounds),
+            )
+            caller_assertions = {
+                "cross_review_gate_status": gate_status,
+                "next_round_decision": decision,
+            }
+            for key, derived_value in caller_assertions.items():
+                if key in payload and payload[key] != derived_value:
+                    raise SystemExit(
+                        f"adaptive synthesis derives {key} as {derived_value!r}; "
+                        f"caller asserted {payload[key]!r}"
+                    )
+            merged_synthesis["cross_review_gate_status"] = gate_status
+            merged_synthesis["next_round_decision"] = decision
+        round_doc["synthesis"] = merged_synthesis
+        timestamp = now_iso()
+        round_doc["synthesis_recorded_at"] = timestamp
+        round_doc["updated_at"] = timestamp
+        append_canonical_event(round_doc, requested_event, timestamp)
+        publish_round_mutation("record-synthesis", run_dir, round_doc)
+
+        print(run_dir / f"round-{args.round:02d}.json")
     return 0
 
 
@@ -1022,82 +2428,125 @@ def validate_cross_review_finalization(
         )
 
 
+def validate_objective_alignment_finalization(round_doc: dict[str, Any]) -> None:
+    synthesis = round_doc.get("synthesis") or {}
+    validate_objective_alignment(synthesis.get("objective_alignment"))
+
+
 def command_finalize_round(args: argparse.Namespace) -> int:
     run_dir = Path(args.run_dir)
-    round_doc = load_round(run_dir, args.round)
-    require_mutable_round(run_dir, round_doc)
-    state = load_state(run_dir)
-    counts = round_counts(round_doc)
-    round_complete = lifecycle_complete(round_doc)
-    validate_round_decision(args.round, args.decision, int(state.get("round_cap", ROUND_CAP)))
-    if not round_complete and not args.blocked:
-        raise SystemExit(
-            "cannot finalize incomplete round without --blocked "
-            f"(results={counts['results']}, closed={counts['closed']})"
-        )
-    if round_complete and args.blocked:
-        raise SystemExit("cannot finalize a complete round as blocked")
-    if args.blocked and args.decision != "stop":
-        raise SystemExit("blocked rounds must finalize with --decision stop")
-    if args.blocked:
-        if not has_lifecycle_failure(round_doc):
-            raise SystemExit("blocked rounds require a recorded lifecycle failure")
-        open_slots = open_spawned_slots(round_doc)
-        if open_slots:
-            raise SystemExit(
-                "cannot finalize blocked round while spawned workers are still open: "
-                + ", ".join(open_slots)
-            )
-    else:
-        require_synthesis_ready(round_doc)
-        validate_cross_review_finalization(run_dir, round_doc, args.decision)
+    if not run_dir.is_dir():
+        raise SystemExit(f"run directory does not exist: {run_dir}")
 
-    round_doc["status"] = "blocked" if args.blocked else "finalized"
-    round_doc.setdefault("synthesis", {})["next_round_decision"] = args.decision
-    if args.blocked:
-        round_doc["synthesis"]["stop_reason"] = args.summary
-        next_action = "blocked"
-        status = "blocked"
-    elif args.decision == "stop":
-        round_doc["synthesis"]["stop_reason"] = args.summary
-        next_action = "complete"
-        status = "complete"
-    elif args.decision == "continue_round_2":
-        round_doc["synthesis"]["next_round_question"] = args.summary
-        next_action = "prepare_round"
-        status = "round_finalized"
-    else:
-        round_doc["synthesis"]["next_round_question"] = args.summary
-        next_action = "ask_user"
-        status = "awaiting_user"
-    round_doc["finalized_at"] = now_iso()
-    write_round(run_dir, round_doc)
-    update_state(
-        run_dir,
-        status=status,
-        last_finalized_round=args.round,
-        current_round=args.round,
-        next_action=next_action,
+    round_status = "blocked" if args.blocked else "finalized"
+    requested_event = event_content(
+        args.round,
+        "round",
+        "finalize",
+        status=round_status,
+        summary=args.summary,
+        decision=args.decision,
+        blocked=args.blocked,
     )
-    append_ledger(run_dir, f"finalized round-{args.round:02d} decision={args.decision}")
-    print(run_dir / "state.json")
+
+    with run_lock(run_dir):
+        reconcile_run(run_dir)
+        round_doc = load_round(run_dir, args.round)
+        state = load_state(run_dir)
+        protocol = protocol_version(state)
+        validate_round_decision(
+            args.round,
+            args.decision,
+            int(state.get("round_cap", ROUND_CAP)),
+            protocol,
+        )
+
+        if find_event(round_doc, str(requested_event["event_id"])) is not None:
+            require_event_replay(round_doc, requested_event)
+            if round_doc.get("status") != round_status:
+                raise SystemExit("conflicting replay for finalized round status")
+            print(run_dir / "state.json")
+            return 0
+
+        require_mutable_round(run_dir, round_doc)
+        counts = round_counts(round_doc)
+        if counts["planned_dispatches"]:
+            raise SystemExit(
+                "cannot finalize while dispatch intent remains planned; "
+                "record spawned, failed, or unknown first"
+            )
+        round_complete = lifecycle_complete(round_doc)
+        if not round_complete and not args.blocked:
+            raise SystemExit(
+                "cannot finalize incomplete round without --blocked "
+                f"(results={counts['results']}, closed={counts['closed']})"
+            )
+        if round_complete and args.blocked:
+            raise SystemExit("cannot finalize a complete round as blocked")
+        if args.blocked and args.decision != "stop":
+            raise SystemExit("blocked rounds must finalize with --decision stop")
+        if args.blocked:
+            if not has_lifecycle_failure(round_doc):
+                raise SystemExit("blocked rounds require a recorded lifecycle failure")
+            open_slots = open_spawned_slots(round_doc)
+            if open_slots:
+                raise SystemExit(
+                    "cannot finalize blocked round while spawned workers are still open: "
+                    + ", ".join(open_slots)
+                )
+        else:
+            require_synthesis_ready(round_doc)
+            validate_objective_alignment_finalization(round_doc)
+            if protocol == ADAPTIVE_PROTOCOL:
+                derived_decision = str(
+                    (round_doc.get("synthesis") or {}).get("next_round_decision") or ""
+                )
+                if args.decision != derived_decision:
+                    raise SystemExit(
+                        f"adaptive decision is derived as {derived_decision!r}; "
+                        f"CLI asserted {args.decision!r}"
+                    )
+            else:
+                validate_cross_review_finalization(run_dir, round_doc, args.decision)
+
+        round_doc["status"] = round_status
+        round_doc.setdefault("synthesis", {})["next_round_decision"] = args.decision
+        if args.blocked or args.decision == "stop":
+            round_doc["synthesis"]["stop_reason"] = args.summary
+        else:
+            round_doc["synthesis"]["next_round_question"] = args.summary
+        timestamp = now_iso()
+        round_doc["finalized_at"] = timestamp
+        round_doc["updated_at"] = timestamp
+        append_canonical_event(round_doc, requested_event, timestamp)
+        publish_round_mutation("finalize-round", run_dir, round_doc)
+
+        print(run_dir / "state.json")
     return 0
 
 
 def command_status(args: argparse.Namespace) -> int:
     run_dir = Path(args.run_dir)
-    state = load_state(run_dir)
-    rounds: dict[str, Any] = {}
-    for round_path in sorted(run_dir.glob("round-*.json")):
-        if not ROUND_JSON_PATTERN.fullmatch(round_path.name):
-            continue
-        round_doc = read_json(round_path)
-        if isinstance(round_doc, dict):
-            rounds[round_path.stem] = {
+    if not run_dir.is_dir():
+        raise SystemExit(f"run directory does not exist: {run_dir}")
+
+    with run_lock(run_dir):
+        reconcile_run(run_dir)
+        state = load_state(run_dir)
+        rounds: dict[str, Any] = {}
+        for round_doc in load_all_rounds(run_dir):
+            stem = f"round-{int(round_doc['round']):02d}"
+            rounds[stem] = {
                 "status": round_doc.get("status"),
                 **round_counts(round_doc),
             }
-    print(json.dumps({"run_dir": str(run_dir), **state, "rounds": rounds}, indent=2, ensure_ascii=False))
+        print(
+            json.dumps(
+                {"run_dir": str(run_dir), **state, "rounds": rounds},
+                indent=2,
+                ensure_ascii=False,
+            )
+        )
     return 0
 
 
@@ -1111,6 +2560,7 @@ def build_parser() -> argparse.ArgumentParser:
     init.add_argument("--root", required=True, help="Run record root directory.")
     init.add_argument("--mode", required=True, choices=["review", "divergent-analysis"])
     init.add_argument("--target", required=True)
+    init.add_argument("--target-overlay", choices=["engineering"], default="")
     init.add_argument("--objective", required=True)
     init.add_argument("--spawn-tool", required=True)
     init.add_argument("--wait-tool", required=True)
@@ -1127,6 +2577,15 @@ def build_parser() -> argparse.ArgumentParser:
     prepare.add_argument("--assignments", required=True)
     prepare.add_argument("--user-approved", action="store_true")
     prepare.set_defaults(func=command_prepare_round)
+
+    plan_dispatch = subparsers.add_parser(
+        "plan-dispatch",
+        help="Record dispatch intent before an external worker spawn.",
+    )
+    plan_dispatch.add_argument("--run-dir", required=True)
+    plan_dispatch.add_argument("--round", required=True, type=int)
+    plan_dispatch.add_argument("--slot", required=True)
+    plan_dispatch.set_defaults(func=command_plan_dispatch)
 
     for name, event in [
         ("record-spawn", "spawn"),

@@ -15,12 +15,14 @@ Multi-agent review is useful only when it stays structured. Without a protocol, 
 
 This skill makes the process repeatable:
 
-- Exactly six subagents per round.
-- Different lenses instead of duplicate opinions.
+- Round 1 uses exactly six workers.
+- The selected review portfolio is the only public portfolio: classic A1-A6 (First Principles, Occam's Razor, Bounded Bayesian, Expected Cost Optimality, Adversarial Review, and Execution Friction).
+- Different lenses instead of duplicate opinions; engineering review distributes one engineering overlay across A1-A6.
+- Divergent engineering analysis assigns exactly one engineering-feasibility role.
 - A local run record before dispatch.
-- Explicit worker lifecycle tracking: spawn, result, close.
+- Explicit fresh-worker lifecycle tracking: spawn, result, close.
 - Clear separation between usable results and failed or missing workers.
-- A continuation gate so analysis stops when another round is unlikely to change the decision.
+- A continuation gate and pending backlog so analysis stops when another round is unlikely to change the decision.
 
 The goal is not to claim statistical independence. The value is controlled decomposition, traceable disagreement, and a durable record of what each worker was asked and what it returned.
 
@@ -46,6 +48,10 @@ Round 1 uses six target-adaptive lenses chosen by the main agent. Each lens reco
 First-round workers stay independent. If a high-impact claim appears from one lens or if lenses conflict on a decision-critical action, the claim is recorded with a `target_id`. Pending targets are cross-reviewed in a targeted second round, downgraded as non-decision-critical, or moved to external verification.
 
 Cross-reviewed claims are classified as `accepted`, `modified`, `rejected`, `unresolved`, or `external-verification`.
+
+New runs use the `adaptive-backlog-v1` protocol. New follow-up rounds use 1-6 fresh follow-up workers per batch. Pending targets beyond six remain in a pending backlog. Round 3+ requires approval for each additional batch. Legacy active runs retain fixed-six and Round-4-cap behavior.
+
+`objective_alignment` is a declared semantic judgment, not automated proof. Round JSON is canonical and projections are repaired deterministically. Worker resume is not implemented in this release.
 
 ## What It Records
 
@@ -139,13 +145,13 @@ Use multi-agent divergent analysis on this architecture decision and find non-ob
 The main agent will:
 
 1. Create a run record.
-2. Prepare exactly six assignments.
-3. Dispatch six workers through the active multi-agent tools.
+2. Prepare six Round 1 assignments from the selected portfolio.
+3. Dispatch six Round 1 workers through the active multi-agent tools.
 4. Record spawn, result, and close lifecycle events.
 5. Write structured synthesis.
-6. Stop or continue only if the continuation gate is satisfied.
+6. Stop or prepare a fresh 1-6-worker follow-up batch only if the continuation gate is satisfied.
 
-Round 3 and Round 4 require explicit user approval. Round 4 is the hard cap.
+For new runs, each Round 3+ follow-up batch requires explicit user approval. Legacy active runs retain their fixed-six Round-4 cap.
 
 ## Helper Commands
 

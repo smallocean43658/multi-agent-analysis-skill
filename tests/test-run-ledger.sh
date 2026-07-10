@@ -8,9 +8,25 @@ LEDGER="$REPO_ROOT/scripts/run-ledger"
 tmpdir="$(mktemp -d)"
 trap 'rm -rf "$tmpdir"' EXIT
 
+init_legacy() {
+  local run_dir
+  run_dir="$("$LEDGER" init "$@")" || return
+  python3 - "$run_dir/state.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+state = json.loads(path.read_text(encoding="utf-8"))
+state.pop("protocol_version", None)
+path.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
+PY
+  printf '%s\n' "$run_dir"
+}
+
 root="$tmpdir/.superpowers/multi-agent-analysis"
 
-run_dir="$("$LEDGER" init \
+run_dir="$(init_legacy \
   --root "$root" \
   --mode review \
   --target docs/plan.md \
@@ -61,7 +77,7 @@ for key in ["spawn", "wait", "close"]:
         raise SystemExit(f"tooling missing {key}")
 PY
 
-if "$LEDGER" init \
+if init_legacy \
   --root "$tmpdir/.superpowers/bad-tooling" \
   --mode review \
   --target docs/plan.md \
@@ -120,6 +136,18 @@ synthesis["expected_value_of_another_round"] = (
 )
 synthesis["next_round_decision"] = decision
 if decision == "stop":
+    synthesis["objective_alignment"] = {
+        "status": "aligned",
+        "rationale": "The synthesis answers the original objective and retains the stated constraints.",
+        "unmet_requirements": [],
+    }
+else:
+    synthesis["objective_alignment"] = {
+        "status": "needs_revision",
+        "rationale": "The next round must resolve the remaining requirement before the objective is satisfied.",
+        "unmet_requirements": ["Resolve the remaining requirement."],
+    }
+if decision == "stop":
     synthesis["stop_reason"] = summary
 else:
     synthesis["next_round_question"] = summary
@@ -131,9 +159,30 @@ PY
     --synthesis "$synthesis_file" >/dev/null
 }
 
+with_objective_alignment() {
+  local path="$1"
+  local status="$2"
+  local rationale="$3"
+  local unmet_requirements="$4"
+  python3 - "$path" "$status" "$rationale" "$unmet_requirements" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+payload = json.loads(path.read_text(encoding="utf-8"))
+payload["objective_alignment"] = {
+    "status": sys.argv[2],
+    "rationale": sys.argv[3],
+    "unmet_requirements": json.loads(sys.argv[4]),
+}
+path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+PY
+}
+
 create_completed_cross_review_round() {
   cross_root="$tmpdir/.superpowers/cross-review"
-  cross_run="$("$LEDGER" init \
+  cross_run="$(init_legacy \
     --root "$cross_root" \
     --mode review \
     --target "plan" \
@@ -202,6 +251,13 @@ for key in [
 ]:
     if key not in round_doc.get("synthesis", {}):
         raise SystemExit(f"synthesis missing {key}")
+events = round_doc.get("events")
+if not isinstance(events, list) or len(events) != 1:
+    raise SystemExit("prepared round must contain one canonical prepare event")
+if events[0].get("event_id") != "r01-round-prepare":
+    raise SystemExit("prepare event_id must be deterministic")
+if events[0].get("event") != "prepare" or events[0].get("slot") != "round":
+    raise SystemExit("prepare event shape mismatch")
 PY
 
 premature_synthesis="$tmpdir/premature-synthesis.json"
@@ -232,7 +288,75 @@ if "$LEDGER" record-synthesis \
   exit 1
 fi
 
-invalid_status_run="$("$LEDGER" init \
+injected_six="$tmpdir/injected-lifecycle.json"
+python3 - "$six" "$injected_six" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+assignments = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+for assignment in assignments:
+    slot = assignment["slot"]
+    assignment.update(
+        {
+            "agent_id": f"injected-{slot}",
+            "spawn_status": "spawned",
+            "spawn_recorded_at": "2026-01-01T00:00:01+00:00",
+            "result_status": "completed",
+            "result_summary": f"Injected {slot} result",
+            "result_recorded_at": "2026-01-01T00:00:02+00:00",
+            "close_status": "closed",
+            "close_recorded_at": "2026-01-01T00:00:03+00:00",
+        }
+    )
+Path(sys.argv[2]).write_text(json.dumps(assignments, indent=2) + "\n", encoding="utf-8")
+PY
+
+injected_run="$(init_legacy \
+  --root "$tmpdir/.superpowers/injected-lifecycle" \
+  --mode review \
+  --target docs/plan.md \
+  --objective "Reject injected assignment lifecycle state" \
+  --spawn-tool spawn_agent \
+  --wait-tool wait_agent \
+  --close-tool close_agent \
+  --title "Injected lifecycle test")"
+"$LEDGER" prepare-round \
+  --run-dir "$injected_run" \
+  --round 1 \
+  --assignments "$injected_six" >/dev/null
+
+if "$LEDGER" record-synthesis \
+  --run-dir "$injected_run" \
+  --round 1 \
+  --synthesis "$premature_synthesis" >/dev/null 2>&1; then
+  echo "record-synthesis reached synthesis from injected assignment lifecycle fields" >&2
+  exit 1
+fi
+
+python3 - "$injected_run/round-01.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+round_doc = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+for assignment in round_doc["assignments"]:
+    if assignment["agent_id"] is not None:
+        raise SystemExit("prepare-round preserved an injected agent_id")
+    if [assignment["spawn_status"], assignment["result_status"], assignment["close_status"]] != [
+        "pending",
+        "pending",
+        "pending",
+    ]:
+        raise SystemExit("prepare-round preserved injected lifecycle statuses")
+    if assignment["result_summary"] != "":
+        raise SystemExit("prepare-round preserved an injected result summary")
+    for key in ("spawn_recorded_at", "result_recorded_at", "close_recorded_at"):
+        if key in assignment:
+            raise SystemExit(f"prepare-round preserved injected {key}")
+PY
+
+invalid_status_run="$(init_legacy \
   --root "$tmpdir/.superpowers/invalid-status" \
   --mode review \
   --target docs/plan.md \
@@ -290,7 +414,7 @@ if "$LEDGER" record-close \
   exit 1
 fi
 
-abnormal_run="$("$LEDGER" init \
+abnormal_run="$(init_legacy \
   --root "$tmpdir/.superpowers/abnormal-close" \
   --mode review \
   --target docs/plan.md \
@@ -383,7 +507,7 @@ if "$LEDGER" finalize-round \
   exit 1
 fi
 
-blocked_run="$("$LEDGER" init \
+blocked_run="$(init_legacy \
   --root "$tmpdir/.superpowers/blocked" \
   --mode review \
   --target docs/plan.md \
@@ -417,11 +541,20 @@ if "$LEDGER" record-spawn \
   exit 1
 fi
 
-"$LEDGER" record-spawn \
+if "$LEDGER" record-spawn \
   --run-dir "$blocked_run" \
   --round 1 \
   --slot A1 \
   --agent-id agent-a1 \
+  --status failed >/dev/null 2>&1; then
+  echo "record-spawn should reject agent-id when status is failed" >&2
+  exit 1
+fi
+
+"$LEDGER" record-spawn \
+  --run-dir "$blocked_run" \
+  --round 1 \
+  --slot A1 \
   --status failed >/dev/null
 
 python3 - "$blocked_run/state.json" <<'PY'
@@ -505,7 +638,91 @@ if "$LEDGER" prepare-round \
   exit 1
 fi
 
-open_blocked_run="$("$LEDGER" init \
+planned_run="$(init_legacy \
+  --root "$tmpdir/.superpowers/planned-dispatch" \
+  --mode review \
+  --target docs/plan.md \
+  --objective "Record fresh dispatch intent before spawning" \
+  --spawn-tool spawn_agent \
+  --wait-tool wait_agent \
+  --close-tool close_agent \
+  --title "Planned dispatch test")"
+
+"$LEDGER" prepare-round --run-dir "$planned_run" --round 1 --assignments "$six" >/dev/null
+"$LEDGER" plan-dispatch --run-dir "$planned_run" --round 1 --slot A1 >/dev/null
+"$LEDGER" plan-dispatch --run-dir "$planned_run" --round 1 --slot A1 >/dev/null
+
+python3 - "$planned_run" "$LEDGER" <<'PY'
+import json
+import subprocess
+import sys
+
+status = json.loads(subprocess.check_output([sys.argv[2], "status", "--run-dir", sys.argv[1]]))
+counts = status["rounds"]["round-01"]
+if counts["planned_dispatches"] != 1:
+    raise SystemExit("plan-dispatch must expose one planned dispatch")
+if counts["unknown_dispatches"] != 0:
+    raise SystemExit("newly planned dispatch must not be unknown")
+if status["next_action"] != "resolve_planned_dispatch":
+    raise SystemExit("planned dispatch must report resolve_planned_dispatch")
+PY
+
+if "$LEDGER" record-synthesis --run-dir "$planned_run" --round 1 \
+  --synthesis "$premature_synthesis" >/dev/null 2>&1; then
+  echo "record-synthesis should reject a round with planned dispatch intent" >&2
+  exit 1
+fi
+if "$LEDGER" finalize-round --run-dir "$planned_run" --round 1 --decision stop \
+  --summary "Planned dispatch is unresolved." --blocked >/dev/null 2>&1; then
+  echo "finalize-round should reject a round with planned dispatch intent" >&2
+  exit 1
+fi
+if "$LEDGER" record-spawn --run-dir "$planned_run" --round 1 --slot A1 \
+  --status unknown --agent-id agent-a1 >/dev/null 2>&1; then
+  echo "record-spawn should reject agent-id when status is unknown" >&2
+  exit 1
+fi
+
+"$LEDGER" record-spawn --run-dir "$planned_run" --round 1 --slot A1 --status unknown >/dev/null
+"$LEDGER" plan-dispatch --run-dir "$planned_run" --round 1 --slot A1 >/dev/null
+if "$LEDGER" record-spawn --run-dir "$planned_run" --round 1 --slot A1 \
+  --status spawned --agent-id replacement-a1 >/dev/null 2>&1; then
+  echo "unknown dispatch must not be retried or replaced" >&2
+  exit 1
+fi
+
+"$LEDGER" plan-dispatch --run-dir "$planned_run" --round 1 --slot A2 >/dev/null
+"$LEDGER" record-spawn --run-dir "$planned_run" --round 1 --slot A2 \
+  --status spawned --agent-id agent-a2 >/dev/null
+"$LEDGER" plan-dispatch --run-dir "$planned_run" --round 1 --slot A2 >/dev/null
+"$LEDGER" record-result --run-dir "$planned_run" --round 1 --slot A2 \
+  --status completed --summary "Known worker result." >/dev/null
+"$LEDGER" record-close --run-dir "$planned_run" --round 1 --slot A2 --status closed >/dev/null
+
+"$LEDGER" plan-dispatch --run-dir "$planned_run" --round 1 --slot A3 >/dev/null
+"$LEDGER" record-spawn --run-dir "$planned_run" --round 1 --slot A3 --status failed >/dev/null
+"$LEDGER" plan-dispatch --run-dir "$planned_run" --round 1 --slot A3 >/dev/null
+
+python3 - "$planned_run" "$LEDGER" <<'PY'
+import json
+import subprocess
+import sys
+
+status = json.loads(subprocess.check_output([sys.argv[2], "status", "--run-dir", sys.argv[1]]))
+counts = status["rounds"]["round-01"]
+if counts["planned_dispatches"] != 0 or counts["unknown_dispatches"] != 1:
+    raise SystemExit("resolved dispatch intent must retain one explicit unknown dispatch")
+if status["next_action"] != "finalize_blocked_round":
+    raise SystemExit("unknown dispatch must require blocked finalization after known workers drain")
+PY
+
+"$LEDGER" finalize-round --run-dir "$planned_run" --round 1 --decision stop \
+  --summary "Dispatch outcome could not be proven; known workers were drained." --blocked >/dev/null
+"$LEDGER" plan-dispatch --run-dir "$planned_run" --round 1 --slot A1 >/dev/null
+"$LEDGER" plan-dispatch --run-dir "$planned_run" --round 1 --slot A2 >/dev/null
+"$LEDGER" plan-dispatch --run-dir "$planned_run" --round 1 --slot A3 >/dev/null
+
+open_blocked_run="$(init_legacy \
   --root "$tmpdir/.superpowers/open-blocked" \
   --mode review \
   --target docs/plan.md \
@@ -543,7 +760,7 @@ if "$LEDGER" finalize-round \
   exit 1
 fi
 
-no_activity_blocked_run="$("$LEDGER" init \
+no_activity_blocked_run="$(init_legacy \
   --root "$tmpdir/.superpowers/no-activity-blocked" \
   --mode review \
   --target docs/plan.md \
@@ -568,7 +785,7 @@ if "$LEDGER" finalize-round \
   exit 1
 fi
 
-failed_result_run="$("$LEDGER" init \
+failed_result_run="$(init_legacy \
   --root "$tmpdir/.superpowers/failed-result" \
   --mode review \
   --target docs/plan.md \
@@ -639,6 +856,15 @@ if "first-principles" not in assignment["result_summary"]:
     raise SystemExit("record-result did not persist summary")
 if assignment["close_status"] != "closed":
     raise SystemExit("record-close did not persist close status")
+event_ids = {item.get("event_id") for item in round_doc.get("events", [])}
+expected_ids = {
+    "r01-round-prepare",
+    "r01-A1-spawn",
+    "r01-A1-result",
+    "r01-A1-close",
+}
+if not expected_ids.issubset(event_ids):
+    raise SystemExit("lifecycle events must use deterministic canonical event ids")
 PY
 
 status_json="$("$LEDGER" status --run-dir "$run_dir")"
@@ -706,7 +932,7 @@ assignments[1]["slot"] = "A1"
 Path(sys.argv[2]).write_text(json.dumps(assignments, indent=2) + "\n", encoding="utf-8")
 PY
 
-duplicate_run="$("$LEDGER" init \
+duplicate_run="$(init_legacy \
   --root "$tmpdir/.superpowers/duplicate" \
   --mode review \
   --target docs/plan.md \
@@ -787,6 +1013,23 @@ fi
   --round 1 \
   --decision continue_round_2 \
   --summary "Round two is justified for test coverage." >/dev/null
+
+python3 - "$run_dir/round-01.json" "$run_dir/ledger.md" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+round_doc = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+event_ids = [item["event_id"] for item in round_doc["events"]]
+if "r01-round-finalize" not in event_ids:
+    raise SystemExit("finalization must be a canonical round event")
+if not any(identifier.startswith("r01-round-synthesis-") for identifier in event_ids):
+    raise SystemExit("synthesis event id must include its canonical payload digest")
+ledger = Path(sys.argv[2]).read_text(encoding="utf-8")
+for identifier in event_ids:
+    if ledger.count(identifier) != 1:
+        raise SystemExit(f"ledger projection must contain {identifier} exactly once")
+PY
 
 python3 - "$run_dir/round-01.md" <<'PY'
 import sys
@@ -931,6 +1174,31 @@ JSON
   --round 1 \
   --assignments "$divergent_good" >/dev/null
 
+for slot in D1 D2 D3 D4 D5 D6; do
+  "$LEDGER" plan-dispatch --run-dir "$divergent_run" --round 1 --slot "$slot" >/dev/null
+  "$LEDGER" record-spawn --run-dir "$divergent_run" --round 1 --slot "$slot" \
+    --agent-id "agent-$slot" --status spawned >/dev/null
+  "$LEDGER" record-result --run-dir "$divergent_run" --round 1 --slot "$slot" \
+    --status completed --summary "$slot result" >/dev/null
+  "$LEDGER" record-close --run-dir "$divergent_run" --round 1 --slot "$slot" \
+    --status closed >/dev/null
+done
+divergent_missing_alignment="$tmpdir/divergent-missing-objective-alignment.json"
+cat >"$divergent_missing_alignment" <<'JSON'
+{
+  "convergence": ["The adaptive lenses produced a shared conclusion."],
+  "action_list": ["Apply the divergent synthesis."],
+  "expected_value_of_another_round": "No additional round is needed.",
+  "cross_review_targets": [],
+  "cross_review_outcomes": []
+}
+JSON
+if "$LEDGER" record-synthesis --run-dir "$divergent_run" --round 1 \
+  --synthesis "$divergent_missing_alignment" >/dev/null 2>&1; then
+  echo "divergent-analysis first synthesis should require objective_alignment" >&2
+  exit 1
+fi
+
 create_completed_cross_review_round
 
 needs_cross_review="$tmpdir/needs-cross-review.json"
@@ -954,6 +1222,11 @@ cat >"$needs_cross_review" <<'JSON'
 }
 JSON
 
+with_objective_alignment \
+  "$needs_cross_review" \
+  "needs_revision" \
+  "The cross-review target must be resolved before the objective is satisfied." \
+  '["Resolve the guardrail decision."]'
 "$LEDGER" record-synthesis --run-dir "$cross_run" --round 1 --synthesis "$needs_cross_review" >/dev/null
 
 if "$LEDGER" finalize-round --run-dir "$cross_run" --round 1 --decision stop --summary "Stop with pending target" >/dev/null 2>&1; then
@@ -985,6 +1258,11 @@ cat >"$pending_but_clear" <<'JSON'
 }
 JSON
 
+with_objective_alignment \
+  "$pending_but_clear" \
+  "aligned" \
+  "The synthesis answers the original objective and retains the stated constraints." \
+  '[]'
 "$LEDGER" record-synthesis --run-dir "$cross_run" --round 1 --synthesis "$pending_but_clear" >/dev/null
 
 if "$LEDGER" finalize-round --run-dir "$cross_run" --round 1 --decision stop --summary "Stop with pending target despite clear gate" >/dev/null 2>&1; then
@@ -1040,6 +1318,11 @@ cat >"$needs_cross_review_multi" <<'JSON'
 }
 JSON
 
+with_objective_alignment \
+  "$needs_cross_review_multi" \
+  "needs_revision" \
+  "The cross-review targets must be resolved before the objective is satisfied." \
+  '["Resolve the guardrail and rollback decisions."]'
 "$LEDGER" record-synthesis --run-dir "$cross_run" --round 1 --synthesis "$needs_cross_review_multi" >/dev/null
 
 if "$LEDGER" finalize-round --run-dir "$cross_run" --round 1 --decision stop --summary "Stop while pending targets remain." >/dev/null 2>&1; then
@@ -1145,6 +1428,11 @@ cat >"$unresolved_outcome" <<'JSON'
 }
 JSON
 
+with_objective_alignment \
+  "$unresolved_outcome" \
+  "aligned" \
+  "The synthesis answers the original objective and retains the stated constraints." \
+  '[]'
 "$LEDGER" record-synthesis --run-dir "$cross_run" --round 2 --synthesis "$unresolved_outcome" >/dev/null
 
 if "$LEDGER" finalize-round --run-dir "$cross_run" --round 2 --decision stop --summary "Stop unresolved" >/dev/null 2>&1; then
@@ -1171,6 +1459,11 @@ cat >"$missing_outcome" <<'JSON'
 }
 JSON
 
+with_objective_alignment \
+  "$missing_outcome" \
+  "aligned" \
+  "The synthesis answers the original objective and retains the stated constraints." \
+  '[]'
 "$LEDGER" record-synthesis --run-dir "$cross_run" --round 2 --synthesis "$missing_outcome" >/dev/null
 
 if "$LEDGER" finalize-round --run-dir "$cross_run" --round 2 --decision stop --summary "Stop with missing outcome" >/dev/null 2>&1; then
@@ -1200,6 +1493,11 @@ cat >"$extra_outcome" <<'JSON'
 }
 JSON
 
+with_objective_alignment \
+  "$extra_outcome" \
+  "aligned" \
+  "The synthesis answers the original objective and retains the stated constraints." \
+  '[]'
 "$LEDGER" record-synthesis --run-dir "$cross_run" --round 2 --synthesis "$extra_outcome" >/dev/null
 
 if "$LEDGER" finalize-round --run-dir "$cross_run" --round 2 --decision stop --summary "Stop with extra outcome target" >/dev/null 2>&1; then
@@ -1230,6 +1528,11 @@ cat >"$resolved_outcome" <<'JSON'
 }
 JSON
 
+with_objective_alignment \
+  "$resolved_outcome" \
+  "aligned" \
+  "The synthesis answers the original objective and retains the stated constraints." \
+  '[]'
 "$LEDGER" record-synthesis --run-dir "$cross_run" --round 2 --synthesis "$resolved_outcome" >/dev/null
 "$LEDGER" finalize-round --run-dir "$cross_run" --round 2 --decision stop --summary "Stop with modified outcome" >/dev/null
 
@@ -1268,6 +1571,11 @@ cat >"$externalized_target_clear_gate" <<'JSON'
 }
 JSON
 
+with_objective_alignment \
+  "$externalized_target_clear_gate" \
+  "aligned" \
+  "The synthesis answers the original objective and retains the stated constraints." \
+  '[]'
 "$LEDGER" record-synthesis --run-dir "$cross_run" --round 1 --synthesis "$externalized_target_clear_gate" >/dev/null
 
 if "$LEDGER" finalize-round --run-dir "$cross_run" --round 1 --decision stop --summary "Stop with externalized target but clear gate" >/dev/null 2>&1; then
@@ -1287,7 +1595,7 @@ payload[1]["lens"] = payload[0]["lens"]
 json.dump(payload, open(dst, "w", encoding="utf-8"), indent=2)
 PY
 
-duplicate_run="$("$LEDGER" init \
+duplicate_run="$(init_legacy \
   --root "$tmpdir/.superpowers/duplicate-lens" \
   --mode divergent-analysis \
   --target docs/plan.md \
@@ -1299,6 +1607,361 @@ duplicate_run="$("$LEDGER" init \
 
 if "$LEDGER" prepare-round --run-dir "$duplicate_run" --round 1 --assignments "$duplicate_lens" >/dev/null 2>&1; then
   echo "divergent round 1 should reject duplicate lens labels" >&2
+  exit 1
+fi
+
+if init_legacy \
+  --root "$tmpdir/.superpowers/blank-objective" \
+  --mode review \
+  --target docs/plan.md \
+  --objective "   " \
+  --spawn-tool spawn_agent \
+  --wait-tool wait_agent \
+  --close-tool close_agent \
+  --title "Blank objective" >/dev/null 2>&1; then
+  echo "init should reject blank objectives" >&2
+  exit 1
+fi
+
+create_completed_objective_round() {
+  objective_run="$(init_legacy \
+    --root "$tmpdir/.superpowers/objective-alignment" \
+    --mode review \
+    --target docs/plan.md \
+    --objective "Decide whether the implementation plan is ready" \
+    --spawn-tool spawn \
+    --wait-tool wait \
+    --close-tool close \
+    --title "Objective alignment")"
+
+  "$LEDGER" prepare-round --run-dir "$objective_run" --round 1 --assignments "$six" >/dev/null
+  for slot in A1 A2 A3 A4 A5 A6; do
+    "$LEDGER" record-spawn --run-dir "$objective_run" --round 1 --slot "$slot" --agent-id "agent-$slot" --status spawned >/dev/null
+    "$LEDGER" record-result --run-dir "$objective_run" --round 1 --slot "$slot" --status completed --summary "$slot result" >/dev/null
+    "$LEDGER" record-close --run-dir "$objective_run" --round 1 --slot "$slot" --status closed >/dev/null
+  done
+}
+
+write_objective_synthesis() {
+  local path="$1"
+  local status="$2"
+  local rationale="$3"
+  local unmet_requirements="$4"
+  local decision="$5"
+  python3 - "$path" "$status" "$rationale" "$unmet_requirements" "$decision" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+status = sys.argv[2]
+rationale = sys.argv[3]
+unmet_requirements = json.loads(sys.argv[4])
+decision = sys.argv[5]
+payload = {
+    "convergence": ["The synthesis has a shared conclusion."],
+    "disagreement": [],
+    "critical_disagreements": [],
+    "cannot_verify": [],
+    "high_impact_low_evidence": [],
+    "action_list": ["Apply the synthesis result."],
+    "expected_value_of_another_round": "Another round is only useful for unresolved requirements.",
+    "next_round_decision": decision,
+    "stop_reason": "The objective is satisfied." if decision == "stop" else "",
+    "next_round_question": "Resolve the unmet requirement." if decision != "stop" else "",
+    "objective_alignment": {
+        "status": status,
+        "rationale": rationale,
+        "unmet_requirements": unmet_requirements,
+    },
+}
+path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+PY
+}
+
+create_completed_objective_round
+aligned_stop="$tmpdir/aligned-stop.json"
+write_objective_synthesis \
+  "$aligned_stop" \
+  "aligned" \
+  "The synthesis answers the original objective and retains the stated constraints." \
+  '[]' \
+  "stop"
+"$LEDGER" record-synthesis --run-dir "$objective_run" --round 1 --synthesis "$aligned_stop" >/dev/null
+"$LEDGER" finalize-round --run-dir "$objective_run" --round 1 --decision stop --summary "Objective is satisfied." >/dev/null
+if ! grep -q "### Objective Alignment" "$objective_run/round-01.md"; then
+  echo "round markdown should render objective alignment" >&2
+  exit 1
+fi
+if ! grep -q "Status: aligned" "$objective_run/round-01.md"; then
+  echo "round markdown should render objective alignment status" >&2
+  exit 1
+fi
+
+create_completed_objective_round
+missing_alignment="$tmpdir/missing-objective-alignment.json"
+python3 - "$aligned_stop" "$missing_alignment" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+payload.pop("objective_alignment")
+Path(sys.argv[2]).write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+PY
+if "$LEDGER" record-synthesis --run-dir "$objective_run" --round 1 --synthesis "$missing_alignment" >/dev/null 2>&1; then
+  echo "record-synthesis should require objective_alignment" >&2
+  exit 1
+fi
+
+for invalid_case in invalid-status blank-rationale malformed-unmet unexpected-field aligned-with-unmet needs-revision-without-unmet; do
+  create_completed_objective_round
+  invalid_synthesis="$tmpdir/$invalid_case.json"
+  case "$invalid_case" in
+    invalid-status)
+      write_objective_synthesis "$invalid_synthesis" "uncertain" "The synthesis is structurally valid." '[]' "stop"
+      ;;
+    blank-rationale)
+      write_objective_synthesis "$invalid_synthesis" "aligned" "   " '[]' "stop"
+      ;;
+    malformed-unmet)
+      write_objective_synthesis "$invalid_synthesis" "needs_revision" "An important constraint remains unresolved." '["", 3]' "ask_user"
+      ;;
+    unexpected-field)
+      write_objective_synthesis "$invalid_synthesis" "aligned" "The synthesis is structurally valid." '[]' "stop"
+      python3 - "$invalid_synthesis" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+payload = json.loads(path.read_text(encoding="utf-8"))
+payload["objective_alignment"]["extra"] = "not allowed"
+path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+PY
+      ;;
+    aligned-with-unmet)
+      write_objective_synthesis "$invalid_synthesis" "aligned" "The synthesis is structurally valid." '["Confirm deployment owner."]' "stop"
+      ;;
+    needs-revision-without-unmet)
+      write_objective_synthesis "$invalid_synthesis" "needs_revision" "An important constraint remains unresolved." '[]' "ask_user"
+      ;;
+  esac
+  if "$LEDGER" record-synthesis --run-dir "$objective_run" --round 1 --synthesis "$invalid_synthesis" >/dev/null 2>&1; then
+    echo "record-synthesis should reject $invalid_case objective alignment" >&2
+    exit 1
+  fi
+done
+
+create_completed_objective_round
+needs_revision_stop="$tmpdir/needs-revision-stop.json"
+write_objective_synthesis \
+  "$needs_revision_stop" \
+  "needs_revision" \
+  "A user decision is needed before the recommendation can satisfy the objective." \
+  '["Choose the deployment owner."]' \
+  "stop"
+"$LEDGER" record-synthesis --run-dir "$objective_run" --round 1 --synthesis "$needs_revision_stop" >/dev/null
+"$LEDGER" finalize-round --run-dir "$objective_run" --round 1 --decision stop \
+  --summary "The unmet requirement is the final review finding." >/dev/null
+
+create_completed_objective_round
+needs_revision_ask_user="$tmpdir/needs-revision-ask-user.json"
+objective_continue="$tmpdir/objective-continue.json"
+write_objective_synthesis \
+  "$objective_continue" \
+  "needs_revision" \
+  "A follow-up round must resolve the deployment owner before the objective is satisfied." \
+  '["Choose the deployment owner."]' \
+  "continue_round_2"
+"$LEDGER" record-synthesis --run-dir "$objective_run" --round 1 --synthesis "$objective_continue" >/dev/null
+"$LEDGER" finalize-round --run-dir "$objective_run" --round 1 --decision continue_round_2 --summary "Resolve the deployment owner." >/dev/null
+"$LEDGER" prepare-round --run-dir "$objective_run" --round 2 --assignments "$six" >/dev/null
+for slot in A1 A2 A3 A4 A5 A6; do
+  "$LEDGER" record-spawn --run-dir "$objective_run" --round 2 --slot "$slot" --agent-id "agent-$slot-round-2" --status spawned >/dev/null
+  "$LEDGER" record-result --run-dir "$objective_run" --round 2 --slot "$slot" --status completed --summary "$slot round two result" >/dev/null
+  "$LEDGER" record-close --run-dir "$objective_run" --round 2 --slot "$slot" --status closed >/dev/null
+done
+write_objective_synthesis \
+  "$needs_revision_ask_user" \
+  "needs_revision" \
+  "The user must choose a deployment owner before the objective is satisfied." \
+  '["Choose the deployment owner."]' \
+  "ask_user"
+"$LEDGER" record-synthesis --run-dir "$objective_run" --round 2 --synthesis "$needs_revision_ask_user" >/dev/null
+"$LEDGER" finalize-round --run-dir "$objective_run" --round 2 --decision ask_user --summary "Choose a deployment owner." >/dev/null
+
+create_completed_objective_round
+weak_rationale="$tmpdir/weak-rationale.json"
+write_objective_synthesis "$weak_rationale" "aligned" "Fine." '[]' "stop"
+"$LEDGER" record-synthesis --run-dir "$objective_run" --round 1 --synthesis "$weak_rationale" >/dev/null
+"$LEDGER" finalize-round --run-dir "$objective_run" --round 1 --decision stop --summary "Structural validation accepts weak rationale." >/dev/null
+
+engineering_review_run="$("$LEDGER" init \
+  --root "$tmpdir/.superpowers/engineering-review" \
+  --mode review \
+  --target docs/plan.md \
+  --target-overlay engineering \
+  --objective "Review the engineering implementation plan" \
+  --spawn-tool spawn_agent \
+  --wait-tool wait_agent \
+  --close-tool close_agent \
+  --title "Engineering review")"
+
+python3 - "$engineering_review_run/state.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+state = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+if state.get("target_overlay") != "engineering":
+    raise SystemExit("init must persist engineering target_overlay in state.json")
+PY
+
+engineering_review_assignments="$tmpdir/engineering-review.json"
+python3 - "$six" "$engineering_review_assignments" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+checks = {
+    "A1": ["functional-requirements", "non-functional-requirements", "acceptance-criteria", "compatibility-and-platform-constraints"],
+    "A2": ["simplest-sufficient-mechanism", "architecture-and-ownership-boundaries", "interfaces-data-flow-and-state", "dependency-necessity"],
+    "A3": ["prototype-test-and-benchmark-evidence", "technical-assumptions", "missing-evidence", "falsification-conditions"],
+    "A4": ["build-buy-and-alternative-architecture", "implementation-and-operating-cost", "migration-and-switching-cost", "reversibility-and-opportunity-cost"],
+    "A5": ["concurrency-and-data-integrity", "security-and-abuse", "dependency-and-capacity-failure", "degradation-recovery-and-rollback"],
+    "A6": ["implementation-sequence-and-ownership", "test-strategy-and-observability", "deployment-and-migration", "maintenance-and-handoff"],
+}
+assignments = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+for assignment in assignments:
+    assignment["overlay_checks"] = checks[assignment["slot"]]
+Path(sys.argv[2]).write_text(json.dumps(assignments, indent=2) + "\n", encoding="utf-8")
+PY
+
+"$LEDGER" prepare-round --run-dir "$engineering_review_run" --round 1 --assignments "$engineering_review_assignments" >/dev/null
+
+engineering_missing_check="$tmpdir/engineering-missing-check.json"
+python3 - "$engineering_review_assignments" "$engineering_missing_check" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+assignments = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+assignments[0]["overlay_checks"] = assignments[0]["overlay_checks"][:-1]
+Path(sys.argv[2]).write_text(json.dumps(assignments, indent=2) + "\n", encoding="utf-8")
+PY
+
+engineering_invalid_run="$("$LEDGER" init \
+  --root "$tmpdir/.superpowers/engineering-invalid" \
+  --mode review \
+  --target docs/plan.md \
+  --target-overlay engineering \
+  --objective "Reject incomplete engineering overlay" \
+  --spawn-tool spawn_agent \
+  --wait-tool wait_agent \
+  --close-tool close_agent \
+  --title "Incomplete engineering overlay")"
+if "$LEDGER" prepare-round --run-dir "$engineering_invalid_run" --round 1 --assignments "$engineering_missing_check" >/dev/null 2>&1; then
+  echo "engineering review must require each slot's exact overlay checks" >&2
+  exit 1
+fi
+
+divergent_engineering_run="$("$LEDGER" init \
+  --root "$tmpdir/.superpowers/divergent-engineering" \
+  --mode divergent-analysis \
+  --target docs/architecture.md \
+  --target-overlay engineering \
+  --objective "Explore implementation options" \
+  --spawn-tool spawn_agent \
+  --wait-tool wait_agent \
+  --close-tool close_agent \
+  --title "Engineering divergent analysis")"
+
+divergent_engineering_assignments="$tmpdir/divergent-engineering.json"
+python3 - "$divergent_good" "$divergent_engineering_assignments" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+assignments = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+assignments[2]["overlay_role"] = "engineering-feasibility"
+assignments[2]["overlay_checks"] = [
+    "simplest-sufficient-mechanism",
+    "implementation-feasibility",
+    "testability-and-observability",
+    "failure-recovery-and-reversibility",
+    "maintenance-portability-and-handoff",
+]
+Path(sys.argv[2]).write_text(json.dumps(assignments, indent=2) + "\n", encoding="utf-8")
+PY
+
+"$LEDGER" prepare-round --run-dir "$divergent_engineering_run" --round 1 --assignments "$divergent_engineering_assignments" >/dev/null
+
+divergent_wrong_slots="$tmpdir/divergent-wrong-slots.json"
+python3 - "$divergent_engineering_assignments" "$divergent_wrong_slots" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+assignments = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+for index, assignment in enumerate(assignments, start=1):
+    assignment["slot"] = f"X{index}"
+Path(sys.argv[2]).write_text(json.dumps(assignments, indent=2) + "\n", encoding="utf-8")
+PY
+
+divergent_wrong_slot_run="$("$LEDGER" init \
+  --root "$tmpdir/.superpowers/divergent-wrong-slots" \
+  --mode divergent-analysis \
+  --target docs/architecture.md \
+  --target-overlay engineering \
+  --objective "Reject non-D divergent slots" \
+  --spawn-tool spawn_agent \
+  --wait-tool wait_agent \
+  --close-tool close_agent \
+  --title "Wrong divergent slots")"
+if "$LEDGER" prepare-round --run-dir "$divergent_wrong_slot_run" --round 1 --assignments "$divergent_wrong_slots" >/dev/null 2>&1; then
+  echo "divergent round 1 must require exact D1-D6 slots, including engineering-feasibility on D3" >&2
+  exit 1
+fi
+
+divergent_extra_engineering="$tmpdir/divergent-extra-engineering.json"
+python3 - "$divergent_engineering_assignments" "$divergent_extra_engineering" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+assignments = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+assignments[3]["overlay_role"] = "engineering-feasibility"
+assignments[3]["overlay_checks"] = assignments[2]["overlay_checks"]
+Path(sys.argv[2]).write_text(json.dumps(assignments, indent=2) + "\n", encoding="utf-8")
+PY
+
+divergent_invalid_run="$("$LEDGER" init \
+  --root "$tmpdir/.superpowers/divergent-invalid" \
+  --mode divergent-analysis \
+  --target docs/architecture.md \
+  --target-overlay engineering \
+  --objective "Reject duplicate engineering angle" \
+  --spawn-tool spawn_agent \
+  --wait-tool wait_agent \
+  --close-tool close_agent \
+  --title "Duplicate engineering angle")"
+if "$LEDGER" prepare-round --run-dir "$divergent_invalid_run" --round 1 --assignments "$divergent_extra_engineering" >/dev/null 2>&1; then
+  echo "engineering divergent analysis must require exactly one engineering-feasibility role" >&2
+  exit 1
+fi
+
+non_engineering_overlay_run="$("$LEDGER" init \
+  --root "$tmpdir/.superpowers/no-overlay" \
+  --mode divergent-analysis \
+  --target docs/market.md \
+  --objective "Explore market options" \
+  --spawn-tool spawn_agent \
+  --wait-tool wait_agent \
+  --close-tool close_agent \
+  --title "No engineering overlay")"
+if "$LEDGER" prepare-round --run-dir "$non_engineering_overlay_run" --round 1 --assignments "$divergent_engineering_assignments" >/dev/null 2>&1; then
+  echo "runs without an engineering overlay must reject overlay fields" >&2
   exit 1
 fi
 

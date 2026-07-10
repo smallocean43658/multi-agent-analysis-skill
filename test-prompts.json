@@ -190,19 +190,18 @@
   },
   {
     "id": 13,
-    "scenario": "third round approval",
-    "prompt": "对 docs/plan.md 做多子代理审查，一直循环直到你觉得够了。",
+    "scenario": "legacy fourth round cap",
+    "prompt": "继续一个没有 protocol_version 的旧多子代理审查记录，直到你觉得够了。",
     "contract": {
       "should_trigger": true,
       "mode": "review",
-      "category": "round3-user-approval",
+      "category": "legacy-round4-cap",
       "required_behaviors": [
         "continuation-gate",
-        "round3-user-approval",
-        "round4-cap"
+        "legacy-round4-cap"
       ]
     },
-    "expected": "The agent may run round two only if the gate justifies it, but asks the user before round three or round four and treats round four as the hard cap."
+    "expected": "The agent retains the legacy fixed-six behavior: it asks the user before round three or round four and treats round four as the hard cap."
   },
   {
     "id": 14,
@@ -331,5 +330,71 @@
       ]
     },
     "expected": "The agent does not create a run record immediately because the request spans multiple targets; it asks one clarification question to choose one target or downgrade to ordinary analysis."
+  },
+  {
+    "id": 22,
+    "scenario": "engineering review distributes one overlay across all A slots",
+    "prompt": "Run a multi-agent engineering review of this implementation plan.",
+    "contract": {
+      "should_trigger": true,
+      "mode": "review",
+      "category": "target-overlay",
+      "required_behaviors": [
+        "six-review-lenses",
+        "default-review-uses-A-portfolio",
+        "distributed-engineering-overlay",
+        "objective-alignment"
+      ]
+    },
+    "expected": "The agent records the engineering target overlay and distributes its exact checks across A1-A6 while preserving the selected review portfolio and objective-alignment judgment."
+  },
+  {
+    "id": 23,
+    "scenario": "engineering divergent analysis uses exactly one engineering-feasibility D slot",
+    "prompt": "Use multi-agent divergent analysis for this engineering architecture decision.",
+    "contract": {
+      "should_trigger": true,
+      "mode": "divergent-analysis",
+      "category": "single-divergent-engineering-angle",
+      "required_behaviors": [
+        "adaptive-divergent-lenses",
+        "single-divergent-engineering-angle",
+        "objective-alignment"
+      ]
+    },
+    "expected": "The agent assigns exactly one D slot the engineering-feasibility role and its exact engineering checks; the other divergent lenses remain target-adaptive and materially distinct."
+  },
+  {
+    "id": 24,
+    "scenario": "non-engineering divergent analysis does not force engineering checks",
+    "prompt": "Use multi-agent divergent analysis to examine this go-to-market decision.",
+    "contract": {
+      "should_trigger": true,
+      "mode": "divergent-analysis",
+      "category": "no-forced-engineering-overlay",
+      "required_behaviors": [
+        "adaptive-divergent-lenses",
+        "no-forced-engineering-overlay",
+        "objective-alignment"
+      ]
+    },
+    "expected": "The agent uses target-adaptive divergent lenses without adding engineering overlay checks or forcing an engineering-feasibility role."
+  },
+  {
+    "id": 25,
+    "scenario": "both modes require objective_alignment and adaptive cross-review semantics",
+    "prompt": "Run a multi-agent review of this plan and preserve decision-critical disagreements through follow-up until the objective is resolved.",
+    "contract": {
+      "should_trigger": true,
+      "mode": "review",
+      "category": "adaptive-followup-backlog",
+      "required_behaviors": [
+        "cross-review-gate",
+        "adaptive-followup-backlog",
+        "objective-alignment",
+        "round3-plus-user-approval"
+      ]
+    },
+    "expected": "The agent records decision-critical targets in the adaptive backlog, judges objective alignment in synthesis, and requests fresh user approval before each round-three-or-later batch."
   }
 ]
