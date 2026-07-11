@@ -22,12 +22,14 @@ from uuid import uuid4
 VERSION = 1
 LEGACY_PROTOCOL = "legacy-fixed-six-v1"
 ADAPTIVE_PROTOCOL = "adaptive-backlog-v1"
+DECISION_CHAIN_PORTFOLIO = "decision-chain-b1-b6-v1"
+CLASSIC_REVIEW_PORTFOLIO = "classic-a1-a6-v1"
 ROUND_ONE_ASSIGNMENT_COUNT = 6
 FOLLOWUP_SEAT_LIMIT = 6
 USER_APPROVAL_FROM_ROUND = 3
 EXPECTED_AGENTS_PER_ROUND = ROUND_ONE_ASSIGNMENT_COUNT
 ROUND_CAP = 4
-REVIEW_ROUND_ONE_LENSES = {
+CLASSIC_REVIEW_ROUND_ONE_LENSES = {
     "A1": "First Principles",
     "A2": "Occam's Razor",
     "A3": "Bounded Bayesian",
@@ -35,44 +37,56 @@ REVIEW_ROUND_ONE_LENSES = {
     "A5": "Adversarial Review",
     "A6": "Execution Friction",
 }
+DECISION_CHAIN_ROUND_ONE_DIMENSIONS = {
+    "B1": "Goal And Requirement Alignment",
+    "B2": "Mechanism And Structural Validity",
+    "B3": "Evidence And Uncertainty Audit",
+    "B4": "Alternatives And Decision Value",
+    "B5": "Risk And Robustness",
+    "B6": "Execution And Lifecycle",
+}
 TARGET_OVERLAYS = {"", "engineering"}
 ENGINEERING_OVERLAY_CHECKS = {
-    "A1": [
+    "B1": [
         "functional-requirements",
         "non-functional-requirements",
         "acceptance-criteria",
         "compatibility-and-platform-constraints",
     ],
-    "A2": [
+    "B2": [
         "simplest-sufficient-mechanism",
         "architecture-and-ownership-boundaries",
         "interfaces-data-flow-and-state",
         "dependency-necessity",
     ],
-    "A3": [
+    "B3": [
         "prototype-test-and-benchmark-evidence",
         "technical-assumptions",
         "missing-evidence",
         "falsification-conditions",
     ],
-    "A4": [
+    "B4": [
         "build-buy-and-alternative-architecture",
         "implementation-and-operating-cost",
         "migration-and-switching-cost",
         "reversibility-and-opportunity-cost",
     ],
-    "A5": [
+    "B5": [
         "concurrency-and-data-integrity",
         "security-and-abuse",
         "dependency-and-capacity-failure",
         "degradation-recovery-and-rollback",
     ],
-    "A6": [
+    "B6": [
         "implementation-sequence-and-ownership",
         "test-strategy-and-observability",
         "deployment-and-migration",
         "maintenance-and-handoff",
     ],
+}
+LEGACY_ENGINEERING_OVERLAY_CHECKS = {
+    f"A{index}": checks
+    for index, checks in enumerate(ENGINEERING_OVERLAY_CHECKS.values(), start=1)
 }
 DIVERGENT_ENGINEERING_CHECKS = [
     "simplest-sufficient-mechanism",
@@ -150,6 +164,21 @@ OBJECTIVE_ALIGNMENT_STATUSES = {"aligned", "needs_revision"}
 
 def protocol_version(state: dict[str, Any]) -> str:
     return str(state.get("protocol_version") or LEGACY_PROTOCOL)
+
+
+def review_portfolio_version(state: dict[str, Any]) -> str:
+    portfolio = state.get("review_portfolio_version")
+    if portfolio is None:
+        return CLASSIC_REVIEW_PORTFOLIO
+    if portfolio != DECISION_CHAIN_PORTFOLIO:
+        raise SystemExit(f"unsupported review portfolio: {portfolio!r}")
+    return DECISION_CHAIN_PORTFOLIO
+
+
+def review_round_one_dimensions(state: dict[str, Any]) -> dict[str, str]:
+    if review_portfolio_version(state) == DECISION_CHAIN_PORTFOLIO:
+        return DECISION_CHAIN_ROUND_ONE_DIMENSIONS
+    return CLASSIC_REVIEW_ROUND_ONE_LENSES
 
 
 def now_iso() -> str:
@@ -333,6 +362,8 @@ def command_init(args: argparse.Namespace) -> int:
         "next_action": "prepare_round",
         "updated_at": created_at,
     }
+    if args.mode == "review":
+        state["review_portfolio_version"] = DECISION_CHAIN_PORTFOLIO
 
     staging = root / f".run-ledger-init-{uuid4()}"
     staging.mkdir(parents=False, exist_ok=False)
@@ -380,12 +411,16 @@ def validate_divergent_round_one(assignments: list[dict[str, Any]]) -> None:
             require_text(item.get(key), key, index)
 
 
-def validate_round_one_lenses(assignments: list[dict[str, Any]], mode: str) -> None:
+def validate_round_one_lenses(
+    assignments: list[dict[str, Any]], mode: str, review_dimensions: dict[str, str] | None
+) -> None:
     if mode == "divergent-analysis":
         validate_divergent_round_one(assignments)
         return
 
-    expected = REVIEW_ROUND_ONE_LENSES
+    if review_dimensions is None:
+        raise SystemExit("review round 1 requires a review portfolio")
+    expected = review_dimensions
     expected_slots = list(expected)
     actual_slots = [item["slot"] for item in assignments]
     if actual_slots != expected_slots:
@@ -405,6 +440,7 @@ def validate_target_overlay(
     mode: str,
     round_number: int,
     target_overlay: str,
+    review_portfolio: str | None,
 ) -> None:
     if target_overlay not in TARGET_OVERLAYS:
         raise SystemExit(f"unsupported target overlay: {target_overlay!r}")
@@ -429,10 +465,15 @@ def validate_target_overlay(
         return
 
     if mode == "review":
+        checks = (
+            ENGINEERING_OVERLAY_CHECKS
+            if review_portfolio == DECISION_CHAIN_PORTFOLIO
+            else LEGACY_ENGINEERING_OVERLAY_CHECKS
+        )
         for index, item in enumerate(assignments, start=1):
             if "overlay_role" in item:
                 raise SystemExit("engineering review assignments must not include overlay_role")
-            expected_checks = ENGINEERING_OVERLAY_CHECKS[item["slot"]]
+            expected_checks = checks[item["slot"]]
             if item.get("overlay_checks") != expected_checks:
                 raise SystemExit(
                     f"{item['slot']} overlay_checks must equal its engineering slot mapping"
@@ -464,6 +505,8 @@ def validate_assignments(
     round_number: int,
     protocol: str,
     target_overlay: str,
+    review_dimensions: dict[str, str] | None,
+    review_portfolio: str | None,
 ) -> list[dict[str, Any]]:
     if not isinstance(raw, list):
         raise SystemExit("assignments JSON must be an array")
@@ -486,8 +529,8 @@ def validate_assignments(
     if len(set(slots)) != len(slots):
         raise SystemExit("assignments must use unique slot labels")
     if round_number == 1:
-        validate_round_one_lenses(validated, mode)
-    validate_target_overlay(validated, mode, round_number, target_overlay)
+        validate_round_one_lenses(validated, mode, review_dimensions)
+    validate_target_overlay(validated, mode, round_number, target_overlay, review_portfolio)
     return validated
 
 
@@ -2008,12 +2051,16 @@ def command_prepare_round(args: argparse.Namespace) -> int:
         if round_number >= USER_APPROVAL_FROM_ROUND and not args.user_approved:
             raise SystemExit(f"round {round_number} requires user approval")
 
+        mode = str(state.get("mode"))
+        review_portfolio = review_portfolio_version(state) if mode == "review" else None
         assignments = validate_assignments(
             read_json(Path(args.assignments)),
-            str(state.get("mode")),
+            mode,
             round_number,
             protocol,
             str(state.get("target_overlay") or ""),
+            review_round_one_dimensions(state) if mode == "review" else None,
+            review_portfolio,
         )
         round_stem = f"round-{round_number:02d}"
         round_json = run_dir / f"{round_stem}.json"

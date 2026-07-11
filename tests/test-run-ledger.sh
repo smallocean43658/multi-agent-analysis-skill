@@ -19,6 +19,7 @@ from pathlib import Path
 path = Path(sys.argv[1])
 state = json.loads(path.read_text(encoding="utf-8"))
 state.pop("protocol_version", None)
+state.pop("review_portfolio_version", None)
 path.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
 PY
   printf '%s\n' "$run_dir"
@@ -101,6 +102,109 @@ cat >"$six" <<'JSON'
   {"slot": "A6", "lens": "Execution Friction", "question": "What makes this hard to use or maintain?"}
 ]
 JSON
+
+b_six="$tmpdir/b-six.json"
+cat >"$b_six" <<'JSON'
+[
+  {"slot": "B1", "lens": "Goal And Requirement Alignment", "question": "What objective, requirements, and constraints must this satisfy?"},
+  {"slot": "B2", "lens": "Mechanism And Structural Validity", "question": "What causal mechanism and structural boundaries make this viable?"},
+  {"slot": "B3", "lens": "Evidence And Uncertainty Audit", "question": "What evidence, assumptions, and falsification conditions matter?"},
+  {"slot": "B4", "lens": "Alternatives And Decision Value", "question": "Which alternatives, costs, and reversibility tradeoffs change the decision?"},
+  {"slot": "B5", "lens": "Risk And Robustness", "question": "Which hostile conditions, failures, and recovery paths matter?"},
+  {"slot": "B6", "lens": "Execution And Lifecycle", "question": "What delivery, testing, operations, and ownership work is required?"}
+]
+JSON
+
+new_review_run="$("$LEDGER" init \
+  --root "$tmpdir/.superpowers/new-review" \
+  --mode review \
+  --target docs/plan.md \
+  --objective "Validate the B decision chain" \
+  --spawn-tool spawn \
+  --wait-tool wait \
+  --close-tool close \
+  --title "B decision chain")"
+python3 - "$new_review_run/state.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+state = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+if state.get("review_portfolio_version") != "decision-chain-b1-b6-v1":
+    raise SystemExit("new review init must persist the B decision-chain portfolio")
+if state.get("version") != 1:
+    raise SystemExit("portfolio compatibility must not change state schema version")
+PY
+"$LEDGER" prepare-round --run-dir "$new_review_run" --round 1 --assignments "$b_six" >/dev/null
+
+new_review_a_run="$("$LEDGER" init \
+  --root "$tmpdir/.superpowers/new-review-a-slots" \
+  --mode review \
+  --target docs/plan.md \
+  --objective "Reject classic slots for a B review" \
+  --spawn-tool spawn \
+  --wait-tool wait \
+  --close-tool close \
+  --title "Reject A slots")"
+if "$LEDGER" prepare-round --run-dir "$new_review_a_run" --round 1 --assignments "$six" >/dev/null 2>&1; then
+  echo "new review runs must reject classic A slots" >&2
+  exit 1
+fi
+
+b_wrong_dimension="$tmpdir/b-wrong-dimension.json"
+python3 - "$b_six" "$b_wrong_dimension" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+assignments = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+assignments[1]["lens"] = "Mechanism Review"
+Path(sys.argv[2]).write_text(json.dumps(assignments, indent=2) + "\n", encoding="utf-8")
+PY
+new_review_dimension_run="$("$LEDGER" init \
+  --root "$tmpdir/.superpowers/new-review-dimension" \
+  --mode review \
+  --target docs/plan.md \
+  --objective "Reject an incorrect B dimension" \
+  --spawn-tool spawn \
+  --wait-tool wait \
+  --close-tool close \
+  --title "Reject wrong B dimension")"
+if "$LEDGER" prepare-round --run-dir "$new_review_dimension_run" --round 1 --assignments "$b_wrong_dimension" >/dev/null 2>&1; then
+  echo "new review runs must require exact B dimension names" >&2
+  exit 1
+fi
+
+divergent_portfolio_run="$("$LEDGER" init \
+  --root "$tmpdir/.superpowers/divergent-no-review-portfolio" \
+  --mode divergent-analysis \
+  --target docs/options.md \
+  --objective "Keep divergent slots independent" \
+  --spawn-tool spawn \
+  --wait-tool wait \
+  --close-tool close \
+  --title "D slots")"
+python3 - "$divergent_portfolio_run/state.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+state = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+if "review_portfolio_version" in state:
+    raise SystemExit("divergent init must not persist a review portfolio")
+PY
+divergent_portfolio_assignments="$tmpdir/divergent-no-review-portfolio.json"
+cat >"$divergent_portfolio_assignments" <<'JSON'
+[
+  {"slot": "D1", "lens": "Regime Detection", "question": "Which regimes matter?", "why_material": "Regimes change the research path.", "expected_new_information": "Relevant regimes."},
+  {"slot": "D2", "lens": "Data Leakage Risk", "question": "Where can leakage enter?", "why_material": "Leakage invalidates results.", "expected_new_information": "Leakage controls."},
+  {"slot": "D3", "lens": "Execution Reality", "question": "Can this trade after costs?", "why_material": "Costs change feasibility.", "expected_new_information": "Execution limits."},
+  {"slot": "D4", "lens": "Research Throughput", "question": "What slows iteration?", "why_material": "Throughput changes evidence quality.", "expected_new_information": "Research bottlenecks."},
+  {"slot": "D5", "lens": "Overfitting Risk", "question": "Where is it overfit?", "why_material": "Overfit results fail live.", "expected_new_information": "Falsification tests."},
+  {"slot": "D6", "lens": "Portfolio Fit", "question": "Does this diversify?", "why_material": "Diversification changes value.", "expected_new_information": "Correlation constraints."}
+]
+JSON
+"$LEDGER" prepare-round --run-dir "$divergent_portfolio_run" --round 1 --assignments "$divergent_portfolio_assignments" >/dev/null
 
 fill_synthesis() {
   local round_json="$1"
@@ -1819,7 +1923,39 @@ if state.get("target_overlay") != "engineering":
 PY
 
 engineering_review_assignments="$tmpdir/engineering-review.json"
-python3 - "$six" "$engineering_review_assignments" <<'PY'
+python3 - "$b_six" "$engineering_review_assignments" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+checks = {
+    "B1": ["functional-requirements", "non-functional-requirements", "acceptance-criteria", "compatibility-and-platform-constraints"],
+    "B2": ["simplest-sufficient-mechanism", "architecture-and-ownership-boundaries", "interfaces-data-flow-and-state", "dependency-necessity"],
+    "B3": ["prototype-test-and-benchmark-evidence", "technical-assumptions", "missing-evidence", "falsification-conditions"],
+    "B4": ["build-buy-and-alternative-architecture", "implementation-and-operating-cost", "migration-and-switching-cost", "reversibility-and-opportunity-cost"],
+    "B5": ["concurrency-and-data-integrity", "security-and-abuse", "dependency-and-capacity-failure", "degradation-recovery-and-rollback"],
+    "B6": ["implementation-sequence-and-ownership", "test-strategy-and-observability", "deployment-and-migration", "maintenance-and-handoff"],
+}
+assignments = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+for assignment in assignments:
+    assignment["overlay_checks"] = checks[assignment["slot"]]
+Path(sys.argv[2]).write_text(json.dumps(assignments, indent=2) + "\n", encoding="utf-8")
+PY
+
+"$LEDGER" prepare-round --run-dir "$engineering_review_run" --round 1 --assignments "$engineering_review_assignments" >/dev/null
+
+legacy_engineering_run="$(init_legacy \
+  --root "$tmpdir/.superpowers/legacy-engineering-review" \
+  --mode review \
+  --target docs/plan.md \
+  --target-overlay engineering \
+  --objective "Retain the engineering overlay for a classic review" \
+  --spawn-tool spawn_agent \
+  --wait-tool wait_agent \
+  --close-tool close_agent \
+  --title "Legacy engineering review")"
+legacy_engineering_assignments="$tmpdir/legacy-engineering-review.json"
+python3 - "$six" "$legacy_engineering_assignments" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -1837,8 +1973,7 @@ for assignment in assignments:
     assignment["overlay_checks"] = checks[assignment["slot"]]
 Path(sys.argv[2]).write_text(json.dumps(assignments, indent=2) + "\n", encoding="utf-8")
 PY
-
-"$LEDGER" prepare-round --run-dir "$engineering_review_run" --round 1 --assignments "$engineering_review_assignments" >/dev/null
+"$LEDGER" prepare-round --run-dir "$legacy_engineering_run" --round 1 --assignments "$legacy_engineering_assignments" >/dev/null
 
 engineering_missing_check="$tmpdir/engineering-missing-check.json"
 python3 - "$engineering_review_assignments" "$engineering_missing_check" <<'PY'

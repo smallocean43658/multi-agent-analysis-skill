@@ -11,6 +11,18 @@ trap 'rm -rf "$tmpdir"' EXIT
 six="$tmpdir/six.json"
 cat >"$six" <<'JSON'
 [
+  {"slot":"B1","lens":"Goal And Requirement Alignment","question":"What objective, requirements, and constraints must this satisfy?"},
+  {"slot":"B2","lens":"Mechanism And Structural Validity","question":"What causal mechanism and structural boundaries make this viable?"},
+  {"slot":"B3","lens":"Evidence And Uncertainty Audit","question":"What evidence, assumptions, and falsification conditions matter?"},
+  {"slot":"B4","lens":"Alternatives And Decision Value","question":"Which alternatives, costs, and reversibility tradeoffs change the decision?"},
+  {"slot":"B5","lens":"Risk And Robustness","question":"Which hostile conditions, failures, and recovery paths matter?"},
+  {"slot":"B6","lens":"Execution And Lifecycle","question":"What delivery, testing, operations, and ownership work is required?"}
+]
+JSON
+
+legacy_six="$tmpdir/legacy-six.json"
+cat >"$legacy_six" <<'JSON'
+[
   {"slot":"A1","lens":"First Principles","question":"What assumptions must hold?"},
   {"slot":"A2","lens":"Occam's Razor","question":"What can be simplified?"},
   {"slot":"A3","lens":"Bounded Bayesian","question":"What changes confidence?"},
@@ -98,7 +110,7 @@ targets = []
 for index in range(1, singles + 1):
     targets.append({
         "target_id": f"{prefix}{index}",
-        "source_slot": "A1",
+        "source_slot": "B1",
         "claim": f"Claim {prefix}{index}",
         "why_decision_critical": f"Why {prefix}{index} changes the decision",
         "review_policy": "single",
@@ -109,7 +121,7 @@ for index in range(1, duals + 1):
     target_id = f"{prefix}{singles + index}"
     targets.append({
         "target_id": target_id,
-        "source_slot": "A2",
+        "source_slot": "B2",
         "claim": f"Claim {target_id}",
         "why_decision_critical": f"Why {target_id} changes the decision",
         "review_policy": "dual",
@@ -389,30 +401,30 @@ review_plan_replay_case() {
   run_dir="$(init_run review-plan-replay)"
   "$LEDGER" prepare-round --run-dir "$run_dir" --round 1 --assignments "$six" >/dev/null
 
-  "$LEDGER" plan-dispatch --run-dir "$run_dir" --round 1 --slot A1 >/dev/null
-  "$LEDGER" record-spawn --run-dir "$run_dir" --round 1 --slot A1 --status unknown >/dev/null
-  assert_plan_replay_unchanged "$run_dir" 1 A1
+  "$LEDGER" plan-dispatch --run-dir "$run_dir" --round 1 --slot B1 >/dev/null
+  "$LEDGER" record-spawn --run-dir "$run_dir" --round 1 --slot B1 --status unknown >/dev/null
+  assert_plan_replay_unchanged "$run_dir" 1 B1
   assert_rejected "unknown dispatch must remain terminal after exact plan replay" \
-    "$LEDGER" record-spawn --run-dir "$run_dir" --round 1 --slot A1 \
+    "$LEDGER" record-spawn --run-dir "$run_dir" --round 1 --slot B1 \
     --status spawned --agent-id replacement-a1
 
-  "$LEDGER" plan-dispatch --run-dir "$run_dir" --round 1 --slot A2 >/dev/null
-  "$LEDGER" record-spawn --run-dir "$run_dir" --round 1 --slot A2 \
+  "$LEDGER" plan-dispatch --run-dir "$run_dir" --round 1 --slot B2 >/dev/null
+  "$LEDGER" record-spawn --run-dir "$run_dir" --round 1 --slot B2 \
     --status spawned --agent-id agent-a2 >/dev/null
-  assert_plan_replay_unchanged "$run_dir" 1 A2
-  "$LEDGER" record-result --run-dir "$run_dir" --round 1 --slot A2 \
+  assert_plan_replay_unchanged "$run_dir" 1 B2
+  "$LEDGER" record-result --run-dir "$run_dir" --round 1 --slot B2 \
     --status completed --summary "Known worker drained." >/dev/null
-  "$LEDGER" record-close --run-dir "$run_dir" --round 1 --slot A2 --status closed >/dev/null
+  "$LEDGER" record-close --run-dir "$run_dir" --round 1 --slot B2 --status closed >/dev/null
 
-  "$LEDGER" plan-dispatch --run-dir "$run_dir" --round 1 --slot A3 >/dev/null
-  "$LEDGER" record-spawn --run-dir "$run_dir" --round 1 --slot A3 --status failed >/dev/null
-  assert_plan_replay_unchanged "$run_dir" 1 A3
+  "$LEDGER" plan-dispatch --run-dir "$run_dir" --round 1 --slot B3 >/dev/null
+  "$LEDGER" record-spawn --run-dir "$run_dir" --round 1 --slot B3 --status failed >/dev/null
+  assert_plan_replay_unchanged "$run_dir" 1 B3
 
   "$LEDGER" finalize-round --run-dir "$run_dir" --round 1 --decision stop \
     --summary "Unknown and failed dispatches block the round." --blocked >/dev/null
-  assert_plan_replay_unchanged "$run_dir" 1 A1
-  assert_plan_replay_unchanged "$run_dir" 1 A2
-  assert_plan_replay_unchanged "$run_dir" 1 A3
+  assert_plan_replay_unchanged "$run_dir" 1 B1
+  assert_plan_replay_unchanged "$run_dir" 1 B2
+  assert_plan_replay_unchanged "$run_dir" 1 B3
 }
 
 adaptive_dispatch_provenance_case() {
@@ -420,21 +432,21 @@ adaptive_dispatch_provenance_case() {
   round_one_run="$(init_run adaptive-dispatch-provenance-round-one)"
   "$LEDGER" prepare-round --run-dir "$round_one_run" --round 1 --assignments "$six" >/dev/null
   assert_rejected "adaptive Round 1 spawned dispatch must be planned first" \
-    "$LEDGER" record-spawn --run-dir "$round_one_run" --round 1 --slot A1 \
+    "$LEDGER" record-spawn --run-dir "$round_one_run" --round 1 --slot B1 \
     --status spawned --agent-id planned-agent
   assert_rejected "adaptive Round 1 unknown dispatch must be planned first" \
-    "$LEDGER" record-spawn --run-dir "$round_one_run" --round 1 --slot A2 --status unknown
+    "$LEDGER" record-spawn --run-dir "$round_one_run" --round 1 --slot B2 --status unknown
   assert_rejected "adaptive Round 1 failed dispatch must be planned first" \
-    "$LEDGER" record-spawn --run-dir "$round_one_run" --round 1 --slot A3 --status failed
+    "$LEDGER" record-spawn --run-dir "$round_one_run" --round 1 --slot B3 --status failed
 
-  "$LEDGER" plan-dispatch --run-dir "$round_one_run" --round 1 --slot A1 >/dev/null
-  "$LEDGER" record-spawn --run-dir "$round_one_run" --round 1 --slot A1 \
+  "$LEDGER" plan-dispatch --run-dir "$round_one_run" --round 1 --slot B1 >/dev/null
+  "$LEDGER" record-spawn --run-dir "$round_one_run" --round 1 --slot B1 \
     --status spawned --agent-id unique-agent >/dev/null
-  "$LEDGER" record-spawn --run-dir "$round_one_run" --round 1 --slot A1 \
+  "$LEDGER" record-spawn --run-dir "$round_one_run" --round 1 --slot B1 \
     --status spawned --agent-id unique-agent >/dev/null
-  "$LEDGER" plan-dispatch --run-dir "$round_one_run" --round 1 --slot A2 >/dev/null
+  "$LEDGER" plan-dispatch --run-dir "$round_one_run" --round 1 --slot B2 >/dev/null
   assert_rejected "spawned agent ids must be unique across adaptive slots" \
-    "$LEDGER" record-spawn --run-dir "$round_one_run" --round 1 --slot A2 \
+    "$LEDGER" record-spawn --run-dir "$round_one_run" --round 1 --slot B2 \
     --status spawned --agent-id unique-agent
 
   local followup_run
@@ -452,7 +464,7 @@ adaptive_dispatch_provenance_case() {
   "$LEDGER" plan-dispatch --run-dir "$followup_run" --round 2 --slot C1 >/dev/null
   assert_rejected "spawned agent ids must be unique across adaptive rounds" \
     "$LEDGER" record-spawn --run-dir "$followup_run" --round 2 --slot C1 \
-    --status spawned --agent-id agent-r1-A1
+    --status spawned --agent-id agent-r1-B1
   "$LEDGER" record-spawn --run-dir "$followup_run" --round 2 --slot C1 \
     --status spawned --agent-id agent-r2-C1 >/dev/null
 }
@@ -488,7 +500,7 @@ from pathlib import Path
 targets = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
 targets.append({
     "target_id": "t2",
-    "source_slot": "A2",
+    "source_slot": "B2",
     "claim": "Claim t2",
     "why_decision_critical": "Why t2 changes the decision",
     "review_policy": "single",
@@ -660,9 +672,10 @@ from pathlib import Path
 path = Path(sys.argv[1])
 state = json.loads(path.read_text(encoding="utf-8"))
 state.pop("protocol_version", None)
+state.pop("review_portfolio_version", None)
 path.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
 PY
-"$LEDGER" prepare-round --run-dir "$legacy_run" --round 1 --assignments "$six" >/dev/null
+"$LEDGER" prepare-round --run-dir "$legacy_run" --round 1 --assignments "$legacy_six" >/dev/null
 complete_round "$legacy_run" 1
 legacy_synthesis="$tmpdir/legacy-synthesis.json"
 cat >"$legacy_synthesis" <<'JSON'
@@ -695,6 +708,18 @@ assert_rejected "legacy Round 2 must reject fewer than six workers" \
   "$LEDGER" prepare-round --run-dir "$legacy_run" --round 2 --assignments "$tmpdir/legacy-five.json"
 write_assignments "$tmpdir/legacy-six.json" legacy-t legacy-t legacy-t legacy-t legacy-t legacy-t
 "$LEDGER" prepare-round --run-dir "$legacy_run" --round 2 --assignments "$tmpdir/legacy-six.json" >/dev/null
+python3 - "$legacy_run/round-01.json" "$legacy_run/state.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+round_doc = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+state = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))
+if round_doc["assignments"][0]["slot"] != "A1":
+    raise SystemExit("legacy A-source records must remain readable")
+if "review_portfolio_version" in state:
+    raise SystemExit("legacy A review state must remain fieldless")
+PY
 assert_rejected "legacy protocol must retain the Round-4 cap" \
   "$LEDGER" prepare-round --run-dir "$legacy_run" --round 5 --assignments "$tmpdir/legacy-six.json" --user-approved
 
@@ -708,6 +733,15 @@ run_one="$(make_pending_run batch-one 1 0)"
 write_assignments "$tmpdir/one.json" t1
 "$LEDGER" prepare-round --run-dir "$run_one" --round 2 --assignments "$tmpdir/one.json" >/dev/null
 assert_round_batch "$run_one" 2 1 "t1" "t1"
+python3 - "$run_one/round-02.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+assignment = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))["assignments"][0]
+if assignment.get("slot") != "C1" or assignment.get("source_slot") != "B1":
+    raise SystemExit("a B1-sourced target must enter C1 follow-up review with its provenance")
+PY
 
 run_two="$(make_pending_run batch-two 2 0)"
 write_assignments "$tmpdir/two.json" t1 t2

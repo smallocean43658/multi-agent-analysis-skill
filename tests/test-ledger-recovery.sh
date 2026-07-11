@@ -70,6 +70,7 @@ from pathlib import Path
 path = Path(sys.argv[1])
 state = json.loads(path.read_text(encoding="utf-8"))
 state.pop("protocol_version", None)
+state.pop("review_portfolio_version", None)
 path.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
 PY
   printf '%s\n' "$run_dir"
@@ -116,6 +117,36 @@ from pathlib import Path
 payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
 payload[0]["question"] = "Which different assumptions must hold?"
 Path(sys.argv[2]).write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+PY
+
+b_six="$tmpdir/b-six.json"
+cat >"$b_six" <<'JSON'
+[
+  {"slot": "B1", "lens": "Goal And Requirement Alignment", "question": "What objective, requirements, and constraints must this satisfy?"},
+  {"slot": "B2", "lens": "Mechanism And Structural Validity", "question": "What causal mechanism and structural boundaries make this viable?"},
+  {"slot": "B3", "lens": "Evidence And Uncertainty Audit", "question": "What evidence, assumptions, and falsification conditions matter?"},
+  {"slot": "B4", "lens": "Alternatives And Decision Value", "question": "Which alternatives, costs, and reversibility tradeoffs change the decision?"},
+  {"slot": "B5", "lens": "Risk And Robustness", "question": "Which hostile conditions, failures, and recovery paths matter?"},
+  {"slot": "B6", "lens": "Execution And Lifecycle", "question": "What delivery, testing, operations, and ownership work is required?"}
+]
+JSON
+
+case_name "fieldless review state retains classic A slots during reconciliation"
+portfolio_compat_run="$(init_run "$tmpdir/portfolio-compat-root" "Fieldless portfolio fixture")"
+"$LEDGER" prepare-round --run-dir "$portfolio_compat_run" --round 1 --assignments "$six" >/dev/null
+expect_failure "$LEDGER" prepare-round --run-dir "$portfolio_compat_run" --round 1 --assignments "$b_six"
+"$LEDGER" status --run-dir "$portfolio_compat_run" >/dev/null
+python3 - "$portfolio_compat_run/state.json" "$portfolio_compat_run/round-01.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+state = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+round_doc = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))
+if "review_portfolio_version" in state:
+    raise SystemExit("status reconciliation must not write a portfolio onto a fieldless review state")
+if [item["slot"] for item in round_doc["assignments"]] != ["A1", "A2", "A3", "A4", "A5", "A6"]:
+    raise SystemExit("fieldless review state must retain classic A assignments")
 PY
 
 synthesis="$tmpdir/synthesis.json"
