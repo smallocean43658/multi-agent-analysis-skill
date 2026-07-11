@@ -15,6 +15,93 @@ WORKER_PROMPT_PATH = ROOT / "round-subagent-prompt.md"
 VALID_MODES = {"review", "divergent-analysis"}
 EXPECTED_PROMPT_IDS = set(range(1, 26))
 
+REVIEW_DIMENSIONS = [
+    (
+        "B1",
+        "Goal And Requirement Alignment",
+        "Objective, audience, requirements, constraints, and completion evidence",
+        "First-principles purpose and requirement analysis",
+    ),
+    (
+        "B2",
+        "Mechanism And Structural Validity",
+        "Causal mechanism, structural boundaries, and simplest sufficient design",
+        "First principles plus Occam's Razor",
+    ),
+    (
+        "B3",
+        "Evidence And Uncertainty Audit",
+        "Evidence, assumptions, falsifiability, confidence, and missing information",
+        "Bounded Bayesian reasoning",
+    ),
+    (
+        "B4",
+        "Alternatives And Decision Value",
+        "Realistic alternatives, benefit, cost, reversibility, and opportunity cost",
+        "Expected-cost and information-value reasoning",
+    ),
+    (
+        "B5",
+        "Risk And Robustness",
+        "Edge cases, incentives, misuse, hostile conditions, brittle dependencies, degradation, and recovery",
+        "Adversarial review",
+    ),
+    (
+        "B6",
+        "Execution And Lifecycle",
+        "Implementation, testing, operation, migration, maintenance, ownership, and handoff",
+        "Execution-friction and lifecycle analysis",
+    ),
+]
+
+REVIEW_BOUNDARIES = [
+    "B1 does not select architecture or implementation sequence.",
+    "B2 does not assess business return, enumerate operational attacks, or create delivery schedules.",
+    "B3 does not redesign the proposal except to identify evidence-producing tests.",
+    "B4 does not own implementation details.",
+    "B5 owns abnormal and adversarial failure, not routine project management.",
+    "B6 owns normal delivery and lifecycle work, not speculative abuse analysis.",
+]
+
+ENGINEERING_OVERLAY_CHECKS = {
+    "B1": (
+        "functional-requirements",
+        "non-functional-requirements",
+        "acceptance-criteria",
+        "compatibility-and-platform-constraints",
+    ),
+    "B2": (
+        "simplest-sufficient-mechanism",
+        "architecture-and-ownership-boundaries",
+        "interfaces-data-flow-and-state",
+        "dependency-necessity",
+    ),
+    "B3": (
+        "prototype-test-and-benchmark-evidence",
+        "technical-assumptions",
+        "missing-evidence",
+        "falsification-conditions",
+    ),
+    "B4": (
+        "build-buy-and-alternative-architecture",
+        "implementation-and-operating-cost",
+        "migration-and-switching-cost",
+        "reversibility-and-opportunity-cost",
+    ),
+    "B5": (
+        "concurrency-and-data-integrity",
+        "security-and-abuse",
+        "dependency-and-capacity-failure",
+        "degradation-recovery-and-rollback",
+    ),
+    "B6": (
+        "implementation-sequence-and-ownership",
+        "test-strategy-and-observability",
+        "deployment-and-migration",
+        "maintenance-and-handoff",
+    ),
+}
+
 REQUIRED_CATEGORIES = {
     "explicit-review-trigger",
     "explicit-divergent-trigger",
@@ -52,7 +139,7 @@ REQUIRED_BEHAVIORS = {
     "targeted-cross-examination",
     "claim-disposition",
     "worker-prompt-contract",
-    "default-review-uses-A-portfolio",
+    "default-review-uses-B-decision-chain",
     "same-target-boundary",
     "dispatch-six-workers",
     "record-results-and-close",
@@ -188,7 +275,6 @@ def assert_skill_mentions_smoke_test() -> None:
         "downgraded_non_decision_critical",
         "external-verification",
         "external_verification",
-        "| A1 | First Principles |",
         "same target",
         "analysis` or `分析` alone is not enough",
         "Target overlay",
@@ -202,12 +288,29 @@ def assert_skill_mentions_smoke_test() -> None:
         if term not in skill_text:
             fail(f"SKILL.md must document {term!r}")
 
+    for slot, dimension, responsibility, method in REVIEW_DIMENSIONS:
+        expected_row = f"| {slot} | {dimension} | {responsibility} | {method} |"
+        if expected_row not in skill_text:
+            fail(f"SKILL.md must document exact B1-B6 row: {expected_row!r}")
+
+    for boundary in REVIEW_BOUNDARIES:
+        if boundary not in skill_text:
+            fail(f"SKILL.md must document B1-B6 boundary: {boundary!r}")
+
+    for slot, checks in ENGINEERING_OVERLAY_CHECKS.items():
+        expected_overlay = f"- {slot}: " + ", ".join(f"`{check}`" for check in checks) + "."
+        if expected_overlay not in skill_text:
+            fail(f"SKILL.md must document exact B-slot engineering overlay: {expected_overlay!r}")
+
     review_table = re.findall(
-        r"\| A1 \| First Principles \|[\s\S]*?\| A6 \| Execution Friction \|",
+        r"\| B1 \| Goal And Requirement Alignment \|[\s\S]*?\| B6 \| Execution And Lifecycle \|",
         skill_text,
     )
     if len(review_table) != 1:
-        fail("SKILL.md must contain exactly one complete classic A1-A6 review table")
+        fail("SKILL.md must contain exactly one complete B1-B6 review table")
+
+    if re.search(r"\| A[1-6] \|", skill_text) or "A1-A6" in skill_text:
+        fail("SKILL.md public review guidance must expose B1-B6 only")
 
     if not re.search(
         r"cross_review_gate_status[\s\S]{0,120}external_verification",
@@ -222,7 +325,7 @@ def assert_skill_mentions_smoke_test() -> None:
 def assert_worker_prompt_mentions_contract() -> None:
     prompt_text = WORKER_PROMPT_PATH.read_text(encoding="utf-8")
     required_terms = [
-        "A1-A6",
+        "B1-B6",
         "D1-D6",
         "C1-C6",
         "why_material",
@@ -246,10 +349,10 @@ def assert_worker_prompt_mentions_contract() -> None:
     if "source_claim" in prompt_text:
         fail("round-subagent-prompt.md must use `claim` instead of `source_claim`")
 
-    if "Return for A1-A6 and D1-D6" not in prompt_text:
+    if "Return for B1-B6 and D1-D6" not in prompt_text:
         fail(
             "round-subagent-prompt.md must explicitly define broad return contract for "
-            "A1-A6/D1-D6 and not reuse the same contract for C1-C6"
+            "B1-B6/D1-D6 and not reuse the same contract for C1-C6"
         )
 
     if "Return for C1-C6" not in prompt_text:
@@ -257,6 +360,17 @@ def assert_worker_prompt_mentions_contract() -> None:
             "round-subagent-prompt.md must include a dedicated minimal return contract "
             "for C1-C6 targeted cross-review"
         )
+
+    for slot, dimension, _, _ in REVIEW_DIMENSIONS:
+        if f"- {slot} {dimension}:" not in prompt_text:
+            fail(f"round-subagent-prompt.md must define B-slot lens guidance for {slot}")
+
+    for boundary in REVIEW_BOUNDARIES:
+        if boundary not in prompt_text:
+            fail(f"round-subagent-prompt.md must state B-slot boundary: {boundary!r}")
+
+    if "A1-A6" in prompt_text:
+        fail("round-subagent-prompt.md public review guidance must expose B1-B6 only")
 
 def main() -> int:
     prompts = load_prompts()

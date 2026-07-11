@@ -16,8 +16,8 @@ Multi-agent review is useful only when it stays structured. Without a protocol, 
 This skill makes the process repeatable:
 
 - Round 1 uses exactly six workers.
-- The selected review portfolio is the only public portfolio: classic A1-A6 (First Principles, Occam's Razor, Bounded Bayesian, Expected Cost Optimality, Adversarial Review, and Execution Friction).
-- Different lenses instead of duplicate opinions; engineering review distributes one engineering overlay across A1-A6.
+- Review mode uses one fixed B1-B6 decision chain.
+- Different dimensions instead of duplicate opinions; engineering review distributes one engineering overlay across B1-B6.
 - Divergent engineering analysis assigns exactly one engineering-feasibility role.
 - A local run record before dispatch.
 - Explicit fresh-worker lifecycle tracking: spawn, result, close.
@@ -30,14 +30,14 @@ The goal is not to claim statistical independence. The value is controlled decom
 
 `review` stress-tests a concrete plan, implementation proposal, spec, skill, or decision.
 
-Round 1 uses these fixed lenses:
+Round 1 uses this fixed decision chain:
 
-- First Principles
-- Occam's Razor
-- Bounded Bayesian
-- Expected Cost Optimality
-- Adversarial Review
-- Execution Friction
+- B1: Goal And Requirement Alignment
+- B2: Mechanism And Structural Validity
+- B3: Evidence And Uncertainty Audit
+- B4: Alternatives And Decision Value
+- B5: Risk And Robustness
+- B6: Execution And Lifecycle
 
 `divergent-analysis` explores materially different angles for a target direction, project, product, strategy, research plan, or next-step question.
 
@@ -145,7 +145,7 @@ Use multi-agent divergent analysis on this architecture decision and find non-ob
 The main agent will:
 
 1. Create a run record.
-2. Prepare six Round 1 assignments from the selected portfolio.
+2. Prepare six Round 1 assignments from the fixed decision chain.
 3. Dispatch six Round 1 workers through the active multi-agent tools.
 4. Record spawn, result, and close lifecycle events.
 5. Write structured synthesis.

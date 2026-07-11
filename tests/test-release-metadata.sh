@@ -7,8 +7,17 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 require_contains() {
   local path="$1"
   local pattern="$2"
-  if ! grep -Fq "$pattern" "$REPO_ROOT/$path"; then
+  if ! grep -Fq -- "$pattern" "$REPO_ROOT/$path"; then
     echo "$path must contain: $pattern" >&2
+    exit 1
+  fi
+}
+
+require_absent() {
+  local path="$1"
+  local pattern="$2"
+  if grep -Fiq -- "$pattern" "$REPO_ROOT/$path"; then
+    echo "$path must not contain: $pattern" >&2
     exit 1
   fi
 }
@@ -32,7 +41,8 @@ require_contains README.md "1-6 fresh follow-up workers"
 require_contains README.md "pending backlog"
 require_contains README.md "engineering overlay"
 require_contains README.md "objective_alignment"
-require_contains README.md "First Principles"
+require_contains README.md "B1-B6"
+require_contains MAINTENANCE.md "decision-chain-b1-b6-v1"
 
 require_contains README.md "Cross-Review Gate"
 require_contains MAINTENANCE.md "target_id"
@@ -55,19 +65,37 @@ if [[ -n "$forbidden_tracked" ]]; then
   exit 1
 fi
 
-require_contains README.md "classic A1-A6"
-require_contains MAINTENANCE.md "classic A1-A6"
-
-selected_portfolio_lenses=(
-  "First Principles"
-  "Occam's Razor"
-  "Bounded Bayesian"
-  "Expected Cost Optimality"
-  "Adversarial Review"
-  "Execution Friction"
+decision_chain_dimensions=(
+  "Goal And Requirement Alignment"
+  "Mechanism And Structural Validity"
+  "Evidence And Uncertainty Audit"
+  "Alternatives And Decision Value"
+  "Risk And Robustness"
+  "Execution And Lifecycle"
 )
-for lens in "${selected_portfolio_lenses[@]}"; do
-  require_contains README.md "$lens"
+for dimension in "${decision_chain_dimensions[@]}"; do
+  require_contains README.md "$dimension"
+done
+
+review_table_rows="$(grep -Ec '^\| B[1-6] \|' "$REPO_ROOT/SKILL.md" || true)"
+if [[ "$review_table_rows" -ne 6 ]]; then
+  echo "SKILL.md must contain exactly six B1-B6 review rows" >&2
+  exit 1
+fi
+
+if grep -Eq '^\| A[1-6] \|' "$REPO_ROOT/SKILL.md"; then
+  echo "SKILL.md must not expose a second complete classic review table" >&2
+  exit 1
+fi
+
+public_contract_files=(SKILL.md round-subagent-prompt.md README.md MAINTENANCE.md test-prompts.json)
+for path in "${public_contract_files[@]}"; do
+  require_absent "$path" "A1-A6"
+  require_absent "$path" "candidate"
+  require_absent "$path" "experiment"
+  require_absent "$path" "A/B"
+  require_absent "$path" "portfolio"
+  require_absent "$path" "--review-portfolio"
 done
 
 if grep -Eq 'resume_agent|send_input|prefer-resume|attempts\[\]' "$REPO_ROOT/scripts/run-ledger"; then

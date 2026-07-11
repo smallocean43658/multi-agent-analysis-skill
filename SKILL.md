@@ -79,31 +79,40 @@ The `brief.md` file is the canonical handoff. Put the target, objective, known c
 
 Use review mode for an explicit multi-agent review of a concrete plan, design, implementation proposal, skill, spec, or decision.
 
-Round 1 must use exactly six subagents with these fixed lenses:
+Round 1 must use exactly six subagents with this fixed decision chain:
 
-| Slot | Lens | Purpose |
-|---|---|---|
-| A1 | First Principles | Test the original objective, requirements, constraints, and completion evidence; strip the plan to goals, causal mechanics, and irreducible requirements. |
-| A2 | Occam's Razor | Detect unnecessary complexity, removable mechanisms, and overfit abstractions. |
-| A3 | Bounded Bayesian | Reason under limited evidence; state priors, updates, confidence, and missing evidence. |
-| A4 | Expected Cost Optimality | Compare downside, upside, reversibility, opportunity cost, and cost of being wrong. |
-| A5 | Adversarial Review | Attack the plan through edge cases, incentives, brittle dependencies, and abuse paths. |
-| A6 | Execution Friction | Test usability, ownership, sequencing, testability, maintenance, and handoff risk. |
+| Slot | Dimension | Primary responsibility | Embedded method |
+|---|---|---|---|
+| B1 | Goal And Requirement Alignment | Objective, audience, requirements, constraints, and completion evidence | First-principles purpose and requirement analysis |
+| B2 | Mechanism And Structural Validity | Causal mechanism, structural boundaries, and simplest sufficient design | First principles plus Occam's Razor |
+| B3 | Evidence And Uncertainty Audit | Evidence, assumptions, falsifiability, confidence, and missing information | Bounded Bayesian reasoning |
+| B4 | Alternatives And Decision Value | Realistic alternatives, benefit, cost, reversibility, and opportunity cost | Expected-cost and information-value reasoning |
+| B5 | Risk And Robustness | Edge cases, incentives, misuse, hostile conditions, brittle dependencies, degradation, and recovery | Adversarial review |
+| B6 | Execution And Lifecycle | Implementation, testing, operation, migration, maintenance, ownership, and handoff | Execution-friction and lifecycle analysis |
 
-Do not replace, merge, or skip these lenses in round 1.
+Boundaries:
+
+- B1 does not select architecture or implementation sequence.
+- B2 does not assess business return, enumerate operational attacks, or create delivery schedules.
+- B3 does not redesign the proposal except to identify evidence-producing tests.
+- B4 does not own implementation details.
+- B5 owns abnormal and adversarial failure, not routine project management.
+- B6 owns normal delivery and lifecycle work, not speculative abuse analysis.
+
+Do not replace, merge, or skip these dimensions in round 1.
 
 ## Engineering Overlay
 
-Use `--target-overlay engineering` only when the target needs an engineering-specific review profile. Target overlay: `engineering` is persisted as static `target_overlay`; otherwise the target overlay is none. It never selects or changes a review portfolio at runtime.
+Use `--target-overlay engineering` only when the target needs an engineering-specific review profile. Target overlay: `engineering` is persisted as static `target_overlay`; otherwise the target overlay is none. It scopes engineering checks without changing the decision chain.
 
-For an engineering review Round 1, retain the classic A1-A6 lenses and use this distributed engineering overlay with exact checks across their slots:
+For an engineering review Round 1, use this distributed engineering overlay with exact checks across B1-B6:
 
-- A1: `functional-requirements`, `non-functional-requirements`, `acceptance-criteria`, `compatibility-and-platform-constraints`.
-- A2: `simplest-sufficient-mechanism`, `architecture-and-ownership-boundaries`, `interfaces-data-flow-and-state`, `dependency-necessity`.
-- A3: `prototype-test-and-benchmark-evidence`, `technical-assumptions`, `missing-evidence`, `falsification-conditions`.
-- A4: `build-buy-and-alternative-architecture`, `implementation-and-operating-cost`, `migration-and-switching-cost`, `reversibility-and-opportunity-cost`.
-- A5: `concurrency-and-data-integrity`, `security-and-abuse`, `dependency-and-capacity-failure`, `degradation-recovery-and-rollback`.
-- A6: `implementation-sequence-and-ownership`, `test-strategy-and-observability`, `deployment-and-migration`, `maintenance-and-handoff`.
+- B1: `functional-requirements`, `non-functional-requirements`, `acceptance-criteria`, `compatibility-and-platform-constraints`.
+- B2: `simplest-sufficient-mechanism`, `architecture-and-ownership-boundaries`, `interfaces-data-flow-and-state`, `dependency-necessity`.
+- B3: `prototype-test-and-benchmark-evidence`, `technical-assumptions`, `missing-evidence`, `falsification-conditions`.
+- B4: `build-buy-and-alternative-architecture`, `implementation-and-operating-cost`, `migration-and-switching-cost`, `reversibility-and-opportunity-cost`.
+- B5: `concurrency-and-data-integrity`, `security-and-abuse`, `dependency-and-capacity-failure`, `degradation-recovery-and-rollback`.
+- B6: `implementation-sequence-and-ownership`, `test-strategy-and-observability`, `deployment-and-migration`, `maintenance-and-handoff`.
 
 For engineering divergent-analysis Round 1, choose six target-adaptive D lenses but assign exactly one slot `overlay_role: engineering-feasibility`. Its `overlay_checks` must be exactly `simplest-sufficient-mechanism`, `implementation-feasibility`, `testability-and-observability`, `failure-recovery-and-reversibility`, and `maintenance-portability-and-handoff`. Do not force engineering checks or an engineering-feasibility role onto a target with no target overlay. Targeted C follow-up assignments do not carry overlay fields.
 
@@ -161,7 +170,7 @@ Create the assignment file yourself, then validate it with the helper:
 
 ```bash
 scripts/run-ledger prepare-round \
-  --run-dir .superpowers/multi-agent-analysis/2026-07-03-1200-review-plan-a1b2c3 \
+  --run-dir .superpowers/multi-agent-analysis/2026-07-03-1200-review-plan-b1b2c3 \
   --round 1 \
   --assignments /tmp/round-01-assignments.json
 ```
@@ -206,26 +215,26 @@ Use the helper commands for live bookkeeping:
 scripts/run-ledger plan-dispatch \
   --run-dir .superpowers/multi-agent-analysis/<run-id> \
   --round 1 \
-  --slot A1
+  --slot B1
 
 scripts/run-ledger record-spawn \
   --run-dir .superpowers/multi-agent-analysis/<run-id> \
   --round 1 \
-  --slot A1 \
+  --slot B1 \
   --agent-id <agent-id> \
   --status spawned
 
 scripts/run-ledger record-result \
   --run-dir .superpowers/multi-agent-analysis/<run-id> \
   --round 1 \
-  --slot A1 \
+  --slot B1 \
   --status completed \
   --summary "Short factual result summary"
 
 scripts/run-ledger record-close \
   --run-dir .superpowers/multi-agent-analysis/<run-id> \
   --round 1 \
-  --slot A1 \
+  --slot B1 \
   --status closed
 ```
 

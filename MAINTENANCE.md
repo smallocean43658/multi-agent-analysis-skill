@@ -30,8 +30,8 @@ This file is for maintainers. Keep user-facing explanation in `README.md` and ru
 
 ### 2026-07-11
 
-- Selected portfolio name: classic A1-A6.
-- Selection validation date: 2026-07-11.
+- New review-run decision-chain version: `decision-chain-b1-b6-v1`.
+- Public review contract: B1-B6 with the documented engineering overlay.
 - `adaptive-backlog-v1` decision: new follow-up batches use 1-6 fresh workers and retain pending targets in the backlog.
 - Fresh-only activation decision: every follow-up worker is newly activated; worker reuse is not implemented.
 - Canonical-round reconciliation decision: round JSON is canonical and projections reconcile deterministically.

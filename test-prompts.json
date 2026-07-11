@@ -14,7 +14,7 @@
         "record-results-and-close",
         "synthesize",
         "continuation-gate",
-        "default-review-uses-A-portfolio",
+        "default-review-uses-B-decision-chain",
         "same-target-boundary"
       ]
     },
@@ -31,7 +31,7 @@
       "required_behaviors": [
         "target-in-brief",
         "six-review-lenses",
-        "default-review-uses-A-portfolio",
+        "default-review-uses-B-decision-chain",
         "same-target-boundary"
       ]
     },
@@ -242,7 +242,7 @@
       "required_behaviors": [
         "require-exactly-six",
         "six-review-lenses",
-        "default-review-uses-A-portfolio"
+        "default-review-uses-B-decision-chain"
       ]
     },
     "expected": "The agent selects review mode and still runs exactly six subagents even though the user did not spell out the number six."
@@ -333,7 +333,7 @@
   },
   {
     "id": 22,
-    "scenario": "engineering review distributes one overlay across all A slots",
+    "scenario": "engineering review distributes one overlay across all B slots",
     "prompt": "Run a multi-agent engineering review of this implementation plan.",
     "contract": {
       "should_trigger": true,
@@ -341,12 +341,12 @@
       "category": "target-overlay",
       "required_behaviors": [
         "six-review-lenses",
-        "default-review-uses-A-portfolio",
+        "default-review-uses-B-decision-chain",
         "distributed-engineering-overlay",
         "objective-alignment"
       ]
     },
-    "expected": "The agent records the engineering target overlay and distributes its exact checks across A1-A6 while preserving the selected review portfolio and objective-alignment judgment."
+    "expected": "The agent records the engineering target overlay and distributes its exact checks across B1-B6 while preserving the decision chain and objective-alignment judgment."
   },
   {
     "id": 23,

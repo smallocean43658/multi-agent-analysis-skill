@@ -8,12 +8,12 @@ Round 1 has six workers. A targeted follow-up round has one to six workers in th
 
 Mode: [review|divergent-analysis]
 Round: [round number]
-Slot: [A1-A6, D1-D6, or C1-C6]
+Slot: [B1-B6, D1-D6, or C1-C6]
 Lens: [lens name]
 Question: [assignment question]
 Target overlay: [engineering or none]
 Overlay checks: [exact checks assigned to this slot]
-Owned lens or dimension: [selected A lens, adaptive D lens, or targeted C lens]
+Owned lens or dimension: [selected B dimension, adaptive D lens, or targeted C lens]
 Out of scope: [selected boundary]
 why_material: [required for divergent-analysis assignments]
 expected_new_information: [required for divergent-analysis assignments]
@@ -30,7 +30,7 @@ Constraints: [known constraints]
 
 Read the brief file first. Analyze only through your assigned lens. Do not summarize other lenses. If a point mainly belongs to another lens, note it briefly and move on.
 
-Return for A1-A6 and D1-D6 (broad return contract):
+Return for B1-B6 and D1-D6 (broad return contract):
 1. Verdict or thesis
 2. Top 3 findings
 3. Assumptions challenged
@@ -51,12 +51,12 @@ Return for C1-C6 (targeted cross-review minimal contract):
 
 For review mode:
 
-- A1 First Principles: test the original objective, requirements, constraints, and completion evidence; focus on goals, causal mechanics, and irreducible requirements.
-- A2 Occam's Razor: focus on unnecessary mechanisms, simpler substitutes, and overfit abstractions.
-- A3 Bounded Bayesian: focus on priors, likelihood updates, confidence, and evidence that would change your view.
-- A4 Expected Cost Optimality: focus on expected downside, upside, reversibility, and opportunity cost.
-- A5 Adversarial Review: focus on edge cases, incentives, abuse paths, brittle dependencies, and ways to break the plan.
-- A6 Execution Friction: focus on usability, ownership, sequencing, testability, maintenance, and handoff risk.
+- B1 Goal And Requirement Alignment: own the objective, audience, requirements, constraints, and completion evidence using first-principles purpose and requirement analysis. Out of scope: B1 does not select architecture or implementation sequence.
+- B2 Mechanism And Structural Validity: own the causal mechanism, structural boundaries, and simplest sufficient design using first principles plus Occam's Razor. Out of scope: B2 does not assess business return, enumerate operational attacks, or create delivery schedules.
+- B3 Evidence And Uncertainty Audit: own evidence, assumptions, falsifiability, confidence, and missing information using bounded Bayesian reasoning. Out of scope: B3 does not redesign the proposal except to identify evidence-producing tests.
+- B4 Alternatives And Decision Value: own realistic alternatives, benefit, cost, reversibility, and opportunity cost using expected-cost and information-value reasoning. Out of scope: B4 does not own implementation details.
+- B5 Risk And Robustness: own edge cases, incentives, misuse, hostile conditions, brittle dependencies, degradation, and recovery using adversarial review. Out of scope: B5 owns abnormal and adversarial failure, not routine project management.
+- B6 Execution And Lifecycle: own implementation, testing, operation, migration, maintenance, ownership, and handoff using execution-friction and lifecycle analysis. Out of scope: B6 owns normal delivery and lifecycle work, not speculative abuse analysis.
 
 For divergent-analysis mode:
 
