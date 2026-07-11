@@ -1348,18 +1348,17 @@ def round_one_review_identity(round_doc: dict[str, Any]) -> str:
         raise SystemExit(f"unsupported canonical round review portfolio: {explicit!r}")
 
     assignments = round_doc.get("assignments")
-    slots = (
-        [item.get("slot") for item in assignments]
+    identity = (
+        [(item.get("slot"), item.get("lens")) for item in assignments]
         if isinstance(assignments, list) and all(isinstance(item, dict) for item in assignments)
         else []
     )
-    classic_slots = list(CLASSIC_REVIEW_ROUND_ONE_LENSES)
-    decision_chain_slots = list(DECISION_CHAIN_ROUND_ONE_DIMENSIONS)
-    inferred = ""
-    if slots == classic_slots:
+    if identity == list(CLASSIC_REVIEW_ROUND_ONE_LENSES.items()):
         inferred = CLASSIC_REVIEW_PORTFOLIO
-    elif slots == decision_chain_slots:
+    elif identity == list(DECISION_CHAIN_ROUND_ONE_DIMENSIONS.items()):
         inferred = DECISION_CHAIN_PORTFOLIO
+    else:
+        raise SystemExit("unrecognized review Round 1 assignment identity")
 
     if explicit == DECISION_CHAIN_PORTFOLIO and inferred != DECISION_CHAIN_PORTFOLIO:
         raise SystemExit("canonical Round 1 portfolio conflicts with its assignment slots")

@@ -251,6 +251,57 @@ PY
 expect_failure_unchanged "state review portfolio conflicts with canonical Round 1" \
   "$portfolio_mismatch_run" "$LEDGER" status --run-dir "$portfolio_mismatch_run"
 
+case_name "B Round 1 with a wrong dimension is rejected without mutation"
+b_dimension_mismatch_run="$(init_b_run "$tmpdir/b-dimension-mismatch-root" "B dimension mismatch")"
+"$LEDGER" prepare-round --run-dir "$b_dimension_mismatch_run" --round 1 \
+  --assignments "$b_six" >/dev/null
+python3 - "$b_dimension_mismatch_run/round-01.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+round_doc = json.loads(path.read_text(encoding="utf-8"))
+round_doc["assignments"][2]["lens"] = "Evidence Review"
+path.write_text(json.dumps(round_doc, indent=2) + "\n", encoding="utf-8")
+PY
+expect_failure_unchanged "unrecognized review Round 1 assignment identity" \
+  "$b_dimension_mismatch_run" "$LEDGER" status --run-dir "$b_dimension_mismatch_run"
+
+case_name "selector-free Round 1 with unknown assignments is rejected without mutation"
+unknown_identity_run="$(init_run "$tmpdir/unknown-identity-root" "Unknown assignment identity")"
+"$LEDGER" prepare-round --run-dir "$unknown_identity_run" --round 1 --assignments "$six" >/dev/null
+python3 - "$unknown_identity_run/round-01.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+round_doc = json.loads(path.read_text(encoding="utf-8"))
+round_doc["assignments"][0]["slot"] = "X1"
+round_doc["assignments"][0]["lens"] = "Unknown Dimension"
+path.write_text(json.dumps(round_doc, indent=2) + "\n", encoding="utf-8")
+PY
+expect_failure_unchanged "unrecognized review Round 1 assignment identity" \
+  "$unknown_identity_run" "$LEDGER" status --run-dir "$unknown_identity_run"
+
+case_name "classic Round 1 with a wrong lens is rejected without mutation"
+classic_lens_mismatch_run="$(init_run "$tmpdir/classic-lens-mismatch-root" "Classic lens mismatch")"
+"$LEDGER" prepare-round --run-dir "$classic_lens_mismatch_run" --round 1 \
+  --assignments "$six" >/dev/null
+python3 - "$classic_lens_mismatch_run/round-01.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+round_doc = json.loads(path.read_text(encoding="utf-8"))
+round_doc["assignments"][0]["lens"] = "Requirement Alignment"
+path.write_text(json.dumps(round_doc, indent=2) + "\n", encoding="utf-8")
+PY
+expect_failure_unchanged "unrecognized review Round 1 assignment identity" \
+  "$classic_lens_mismatch_run" "$LEDGER" status --run-dir "$classic_lens_mismatch_run"
+
 case_name "B identity is restored from canonical Round 1 and exact replay remains stable"
 b_recovery_run="$(init_b_run "$tmpdir/b-recovery-root" "B identity recovery")"
 expect_failpoint "prepare-round:after-round-json" \
