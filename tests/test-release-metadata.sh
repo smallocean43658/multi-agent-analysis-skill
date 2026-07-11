@@ -43,6 +43,8 @@ require_contains README.md "engineering overlay"
 require_contains README.md "objective_alignment"
 require_contains README.md "B1-B6"
 require_contains MAINTENANCE.md "decision-chain-b1-b6-v1"
+require_contains README.md 'fixed B1-B6 dimensions for `review`'
+require_contains README.md 'target-adaptive D1-D6 lenses for `divergent-analysis`'
 
 require_contains README.md "Cross-Review Gate"
 require_contains MAINTENANCE.md "target_id"
@@ -62,6 +64,18 @@ forbidden_tracked="$(git -C "$REPO_ROOT" ls-files | grep -E '(^|/)(\.superpowers
 if [[ -n "$forbidden_tracked" ]]; then
   echo "tracked operational or private files are forbidden:" >&2
   echo "$forbidden_tracked" >&2
+  exit 1
+fi
+
+mapfile -t public_markdown_files < <(git -C "$REPO_ROOT" ls-files -- '*.md')
+if [[ "${#public_markdown_files[@]}" -eq 0 ]]; then
+  echo "release metadata must scan tracked Markdown guidance" >&2
+  exit 1
+fi
+
+historical_plan="docs/superpowers/plans/2026-07-04-adaptive-divergent-cross-review.md"
+if git -C "$REPO_ROOT" ls-files --error-unmatch "$historical_plan" >/dev/null 2>&1; then
+  echo "historical classic review plan must not remain tracked" >&2
   exit 1
 fi
 
@@ -88,7 +102,7 @@ if grep -Eq '^\| A[1-6] \|' "$REPO_ROOT/SKILL.md"; then
   exit 1
 fi
 
-public_contract_files=(SKILL.md round-subagent-prompt.md README.md MAINTENANCE.md test-prompts.json)
+public_contract_files=("${public_markdown_files[@]}" test-prompts.json)
 for path in "${public_contract_files[@]}"; do
   require_absent "$path" "A1-A6"
   require_absent "$path" "candidate"
@@ -96,6 +110,13 @@ for path in "${public_contract_files[@]}"; do
   require_absent "$path" "A/B"
   require_absent "$path" "portfolio"
   require_absent "$path" "--review-portfolio"
+done
+
+for path in "${public_markdown_files[@]}"; do
+  if grep -Eq '(^|[^[:alnum:]_])A[1-6]([^[:alnum:]_]|$)' "$REPO_ROOT/$path"; then
+    echo "$path must not expose classic A1-A6 review slot guidance" >&2
+    exit 1
+  fi
 done
 
 if grep -Eq 'resume_agent|send_input|prefer-resume|attempts\[\]' "$REPO_ROOT/scripts/run-ledger"; then

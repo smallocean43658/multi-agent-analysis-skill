@@ -145,7 +145,7 @@ Use multi-agent divergent analysis on this architecture decision and find non-ob
 The main agent will:
 
 1. Create a run record.
-2. Prepare six Round 1 assignments from the fixed decision chain.
+2. Prepare exactly six Round 1 assignments: fixed B1-B6 dimensions for `review`; target-adaptive D1-D6 lenses for `divergent-analysis`.
 3. Dispatch six Round 1 workers through the active multi-agent tools.
 4. Record spawn, result, and close lifecycle events.
 5. Write structured synthesis.
