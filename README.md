@@ -172,6 +172,8 @@ scripts/run-ledger status
 
 For the full protocol, read `SKILL.md`.
 
+Historical A runs remain readable with the current helper. Once a B run is started, it requires a B-capable helper and must be completed or blocked before rolling code back.
+
 ## Validate
 
 Run the smoke tests after changing triggers, modes, lifecycle behavior, synthesis rules, or continuation rules:
@@ -179,7 +181,15 @@ Run the smoke tests after changing triggers, modes, lifecycle behavior, synthesi
 ```bash
 python3 tests/test-prompt-contract.py
 bash tests/test-run-ledger.sh
+bash tests/test-ledger-recovery.sh
+bash tests/test-followup-protocol.sh
 bash tests/test-release-metadata.sh
+python3 -m py_compile scripts/run-ledger tests/test-prompt-contract.py
+bash -n tests/test-run-ledger.sh
+bash -n tests/test-ledger-recovery.sh
+bash -n tests/test-followup-protocol.sh
+bash -n tests/test-release-metadata.sh
+git diff --check
 ```
 
 Smoke tests do not exercise live multi-agent tool calls. They validate prompt contracts, helper state transitions, and release metadata. A real analysis run still requires worker-capable tools in the active Codex session.

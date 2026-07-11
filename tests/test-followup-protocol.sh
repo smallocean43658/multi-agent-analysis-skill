@@ -31,6 +31,8 @@ cat >"$legacy_six" <<'JSON'
   {"slot":"A6","lens":"Execution Friction","question":"What impedes execution?"}
 ]
 JSON
+immediate_predecessor_six="$tmpdir/immediate-predecessor-six.json"
+cp "$legacy_six" "$immediate_predecessor_six"
 
 fail() {
   echo "$*" >&2
@@ -722,6 +724,73 @@ if "review_portfolio_version" in state:
 PY
 assert_rejected "legacy protocol must retain the Round-4 cap" \
   "$LEDGER" prepare-round --run-dir "$legacy_run" --round 5 --assignments "$tmpdir/legacy-six.json" --user-approved
+
+# Immediate-predecessor review runs already used adaptive-backlog-v1 but had no
+# review portfolio selector. They remain legal classic A runs end to end.
+immediate_predecessor_run="$(init_run immediate-predecessor-compatibility)"
+python3 - "$immediate_predecessor_run/state.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+state = json.loads(path.read_text(encoding="utf-8"))
+state.pop("review_portfolio_version")
+if state.get("protocol_version") != "adaptive-backlog-v1":
+    raise SystemExit("immediate predecessor fixture must retain adaptive-backlog-v1")
+path.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
+PY
+"$LEDGER" prepare-round --run-dir "$immediate_predecessor_run" --round 1 \
+  --assignments "$immediate_predecessor_six" >/dev/null
+printf 'stale projection\n' >"$immediate_predecessor_run/round-01.md"
+"$LEDGER" status --run-dir "$immediate_predecessor_run" >/dev/null
+complete_round "$immediate_predecessor_run" 1
+immediate_targets="$tmpdir/immediate-predecessor-targets.json"
+cat >"$immediate_targets" <<'JSON'
+[
+  {
+    "target_id": "immediate-t1",
+    "source_slot": "A1",
+    "claim": "The historical claim needs one fresh review.",
+    "why_decision_critical": "Its disposition changes the historical run decision.",
+    "review_policy": "single",
+    "conflict_ref": null,
+    "disposition": "pending"
+  }
+]
+JSON
+immediate_empty="$tmpdir/immediate-predecessor-empty.json"
+printf '[]\n' >"$immediate_empty"
+write_synthesis "$tmpdir/immediate-predecessor-synthesis.json" \
+  "$immediate_targets" "$immediate_empty"
+"$LEDGER" record-synthesis --run-dir "$immediate_predecessor_run" --round 1 \
+  --synthesis "$tmpdir/immediate-predecessor-synthesis.json" >/dev/null
+"$LEDGER" finalize-round --run-dir "$immediate_predecessor_run" --round 1 \
+  --decision continue_round_2 --summary "Review immediate-t1." >/dev/null
+write_assignments "$tmpdir/immediate-predecessor-followup.json" immediate-t1
+"$LEDGER" prepare-round --run-dir "$immediate_predecessor_run" --round 2 \
+  --assignments "$tmpdir/immediate-predecessor-followup.json" >/dev/null
+"$LEDGER" status --run-dir "$immediate_predecessor_run" >/dev/null
+python3 - "$immediate_predecessor_run/state.json" \
+  "$immediate_predecessor_run/round-01.json" \
+  "$immediate_predecessor_run/round-02.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+state = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+round_one = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))
+round_two = json.loads(Path(sys.argv[3]).read_text(encoding="utf-8"))
+if state.get("protocol_version") != "adaptive-backlog-v1":
+    raise SystemExit("immediate predecessor protocol changed")
+if "review_portfolio_version" in state or "review_portfolio_version" in round_one:
+    raise SystemExit("immediate predecessor A fixture must remain selector-free")
+if [item["slot"] for item in round_one["assignments"]] != ["A1", "A2", "A3", "A4", "A5", "A6"]:
+    raise SystemExit("immediate predecessor A assignments changed")
+assignment = round_two["assignments"][0]
+if assignment.get("slot") != "C1" or assignment.get("source_slot") != "A1":
+    raise SystemExit("immediate predecessor A target did not enter legal C follow-up")
+PY
 
 # Adaptive Round 1 is still fixed at six workers.
 write_assignments "$tmpdir/not-six-round-one.json" t1 t2 t3 t4 t5

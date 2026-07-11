@@ -25,6 +25,7 @@ This file is for maintainers. Keep user-facing explanation in `README.md` and ru
 - `scripts/run-ledger` owns mechanical validation, lifecycle state transitions, and markdown rendering.
 - The main agent still owns judgment: whether to trigger, which active tools to use, how to synthesize, and whether another round is worth running.
 - Round 1 and legacy protocol rounds use six workers; adaptive follow-up batches use 1-6.
+- Historical A runs remain readable with the current helper. Once a B run is started, it requires a B-capable helper and must be completed or blocked before rolling code back.
 
 ## Change Log
 
@@ -37,14 +38,7 @@ This file is for maintainers. Keep user-facing explanation in `README.md` and ru
 - Canonical-round reconciliation decision: round JSON is canonical and projections reconcile deterministically.
 - Legacy compatibility behavior: active legacy runs retain fixed-six and Round-4-cap behavior.
 - Deferred to a separate evidence-backed plan: worker resume, replacement, retry, and multi-activation.
-- Validation commands:
-  - `bash tests/test-release-metadata.sh`
-  - `python3 tests/test-prompt-contract.py`
-  - `bash tests/test-run-ledger.sh`
-  - `bash tests/test-ledger-recovery.sh`
-  - `bash tests/test-followup-protocol.sh`
-  - `bash -n tests/test-ledger-recovery.sh`
-  - `bash -n tests/test-followup-protocol.sh`
+- Validation uses the complete command set in Verification below.
 
 ### 2026-07-04
 

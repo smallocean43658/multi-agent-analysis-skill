@@ -48,6 +48,25 @@ expect_failure_matching() {
   fi
 }
 
+canonical_snapshot() {
+  local run_dir="$1"
+  find "$run_dir" -maxdepth 1 -type f \
+    \( -name 'state.json' -o -name 'round-*.json' -o -name 'round-*.md' -o -name 'ledger.md' \) \
+    -print0 | sort -z | xargs -0 sha256sum
+}
+
+expect_failure_unchanged() {
+  local expected="$1"
+  local run_dir="$2"
+  shift 2
+  local before
+  local after
+  before="$(canonical_snapshot "$run_dir")"
+  expect_failure_matching "$expected" "$@"
+  after="$(canonical_snapshot "$run_dir")"
+  [[ "$before" == "$after" ]] || fail "rejected command mutated canonical files in $run_dir"
+}
+
 init_run() {
   local root="$1"
   local title="$2"
@@ -74,6 +93,21 @@ state.pop("review_portfolio_version", None)
 path.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
 PY
   printf '%s\n' "$run_dir"
+}
+
+init_b_run() {
+  local root="$1"
+  local title="$2"
+  "$LEDGER" init \
+    --root "$root" \
+    --mode review \
+    --target docs/plan.md \
+    --objective "Verify B portfolio recovery" \
+    --spawn-tool multi_agent_v1.spawn_agent \
+    --wait-tool multi_agent_v1.wait_agent \
+    --close-tool multi_agent_v1.close_agent \
+    --cwd "$REPO_ROOT" \
+    --title "$title"
 }
 
 event_count() {
@@ -130,6 +164,164 @@ cat >"$b_six" <<'JSON'
   {"slot": "B6", "lens": "Execution And Lifecycle", "question": "What delivery, testing, operations, and ownership work is required?"}
 ]
 JSON
+
+case_name "numeric round filenames must be canonical before reconciliation"
+noncanonical_run="$(init_run "$tmpdir/noncanonical-root" "Noncanonical round filename")"
+"$LEDGER" prepare-round --run-dir "$noncanonical_run" --round 1 --assignments "$six" >/dev/null
+cp "$noncanonical_run/round-01.json" "$noncanonical_run/round-1.json"
+expect_failure_unchanged "noncanonical round JSON filename" "$noncanonical_run" \
+  "$LEDGER" status --run-dir "$noncanonical_run"
+
+case_name "malformed static state is rejected before status reconciliation"
+malformed_mode_run="$(init_b_run "$tmpdir/malformed-mode-root" "Malformed mode")"
+"$LEDGER" prepare-round --run-dir "$malformed_mode_run" --round 1 --assignments "$b_six" >/dev/null
+python3 - "$malformed_mode_run/state.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+state = json.loads(path.read_text(encoding="utf-8"))
+state["mode"] = "comparison"
+path.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
+PY
+expect_failure_unchanged "unsupported run mode" "$malformed_mode_run" \
+  "$LEDGER" status --run-dir "$malformed_mode_run"
+
+case_name "unknown review portfolio is rejected before lifecycle reconciliation"
+unknown_portfolio_run="$(init_b_run "$tmpdir/unknown-portfolio-root" "Unknown portfolio")"
+"$LEDGER" prepare-round --run-dir "$unknown_portfolio_run" --round 1 --assignments "$b_six" >/dev/null
+python3 - "$unknown_portfolio_run/state.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+state = json.loads(path.read_text(encoding="utf-8"))
+state["review_portfolio_version"] = "unknown-review-v9"
+path.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
+PY
+expect_failure_unchanged "unsupported review portfolio" "$unknown_portfolio_run" \
+  "$LEDGER" plan-dispatch --run-dir "$unknown_portfolio_run" --round 1 --slot B1
+
+case_name "divergent mode rejects a review portfolio before reconciliation"
+mode_field_run="$(init_b_run "$tmpdir/mode-field-root" "Mode field mismatch")"
+python3 - "$mode_field_run/state.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+state = json.loads(path.read_text(encoding="utf-8"))
+state["mode"] = "divergent-analysis"
+path.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
+PY
+expect_failure_unchanged "divergent-analysis state must not include review_portfolio_version" \
+  "$mode_field_run" "$LEDGER" status --run-dir "$mode_field_run"
+
+case_name "state and canonical round mode mismatch is rejected without mutation"
+round_mode_run="$(init_b_run "$tmpdir/round-mode-root" "Round mode mismatch")"
+"$LEDGER" prepare-round --run-dir "$round_mode_run" --round 1 --assignments "$b_six" >/dev/null
+python3 - "$round_mode_run/round-01.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+round_doc = json.loads(path.read_text(encoding="utf-8"))
+round_doc["mode"] = "divergent-analysis"
+path.write_text(json.dumps(round_doc, indent=2) + "\n", encoding="utf-8")
+PY
+expect_failure_unchanged "round-01 mode conflicts with state" "$round_mode_run" \
+  "$LEDGER" status --run-dir "$round_mode_run"
+
+case_name "state and canonical Round 1 portfolio mismatch is rejected without mutation"
+portfolio_mismatch_run="$(init_run "$tmpdir/portfolio-mismatch-root" "Portfolio mismatch")"
+"$LEDGER" prepare-round --run-dir "$portfolio_mismatch_run" --round 1 --assignments "$six" >/dev/null
+python3 - "$portfolio_mismatch_run/state.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+state = json.loads(path.read_text(encoding="utf-8"))
+state["review_portfolio_version"] = "decision-chain-b1-b6-v1"
+path.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
+PY
+expect_failure_unchanged "state review portfolio conflicts with canonical Round 1" \
+  "$portfolio_mismatch_run" "$LEDGER" status --run-dir "$portfolio_mismatch_run"
+
+case_name "B identity is restored from canonical Round 1 and exact replay remains stable"
+b_recovery_run="$(init_b_run "$tmpdir/b-recovery-root" "B identity recovery")"
+expect_failpoint "prepare-round:after-round-json" \
+  "$LEDGER" prepare-round --run-dir "$b_recovery_run" --round 1 --assignments "$b_six"
+python3 - "$b_recovery_run/state.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+state = json.loads(path.read_text(encoding="utf-8"))
+state.pop("review_portfolio_version")
+path.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
+PY
+b_round_before="$(sha256sum "$b_recovery_run/round-01.json")"
+"$LEDGER" status --run-dir "$b_recovery_run" >/dev/null
+python3 - "$b_recovery_run/state.json" "$b_recovery_run/round-01.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+state = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+round_doc = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))
+expected = "decision-chain-b1-b6-v1"
+if state.get("review_portfolio_version") != expected:
+    raise SystemExit("status must restore B identity from canonical Round 1")
+if round_doc.get("review_portfolio_version") != expected:
+    raise SystemExit("B Round 1 must carry canonical portfolio identity")
+PY
+[[ "$b_round_before" == "$(sha256sum "$b_recovery_run/round-01.json")" ]] || \
+  fail "B identity recovery mutated canonical Round 1"
+"$LEDGER" prepare-round --run-dir "$b_recovery_run" --round 1 --assignments "$b_six" >/dev/null
+[[ "$b_round_before" == "$(sha256sum "$b_recovery_run/round-01.json")" ]] || \
+  fail "B exact prepare replay mutated canonical Round 1"
+
+case_name "exact B assignments recover identity when the canonical field is absent"
+b_assignment_recovery_run="$(init_b_run "$tmpdir/b-assignment-recovery-root" "B assignment recovery")"
+"$LEDGER" prepare-round --run-dir "$b_assignment_recovery_run" --round 1 \
+  --assignments "$b_six" >/dev/null
+python3 - "$b_assignment_recovery_run/state.json" \
+  "$b_assignment_recovery_run/round-01.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+for raw_path in sys.argv[1:]:
+    path = Path(raw_path)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload.pop("review_portfolio_version")
+    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+PY
+b_assignment_round_before="$(sha256sum "$b_assignment_recovery_run/round-01.json")"
+"$LEDGER" status --run-dir "$b_assignment_recovery_run" >/dev/null
+python3 - "$b_assignment_recovery_run/state.json" "$b_assignment_recovery_run/round-01.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+state = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+round_doc = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))
+if state.get("review_portfolio_version") != "decision-chain-b1-b6-v1":
+    raise SystemExit("exact B assignments must restore missing state identity")
+if "review_portfolio_version" in round_doc:
+    raise SystemExit("assignment-based recovery must not rewrite canonical Round 1")
+if state.get("version") != 1 or round_doc.get("version") != 1:
+    raise SystemExit("B assignment recovery must preserve schema version 1")
+if state.get("protocol_version") != "adaptive-backlog-v1":
+    raise SystemExit("B assignment recovery must preserve adaptive-backlog-v1")
+PY
+[[ "$b_assignment_round_before" == "$(sha256sum "$b_assignment_recovery_run/round-01.json")" ]] || \
+  fail "assignment-based B identity recovery mutated canonical Round 1"
 
 case_name "fieldless review state retains classic A slots during reconciliation"
 portfolio_compat_run="$(init_run "$tmpdir/portfolio-compat-root" "Fieldless portfolio fixture")"

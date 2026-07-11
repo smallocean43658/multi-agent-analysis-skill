@@ -58,6 +58,8 @@ Every run must create a local record before the first dispatch:
 - Canonical mutable record: ordered `events` and lifecycle/synthesis/finalization data in `round-N.json`. Treat `state.json` dynamic fields, `round-N.md`, and `ledger.md` as rebuildable projections.
 - Protocol: new runs store `adaptive-backlog-v1`. A pre-existing state without `protocol_version` remains `legacy-fixed-six-v1`; never migrate it implicitly.
 
+Historical A runs remain readable with the current helper. Once a B run is started, it requires a B-capable helper and must be completed or blocked before rolling code back.
+
 Resolve helper paths relative to this `SKILL.md` file. Use the bundled helper when available:
 
 ```bash

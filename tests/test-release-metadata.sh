@@ -48,6 +48,28 @@ require_contains README.md 'target-adaptive D1-D6 lenses for `divergent-analysis
 
 require_contains README.md "Cross-Review Gate"
 require_contains MAINTENANCE.md "target_id"
+rollback_policy="Historical A runs remain readable with the current helper. Once a B run is started, it requires a B-capable helper and must be completed or blocked before rolling code back."
+require_contains SKILL.md "$rollback_policy"
+require_contains README.md "$rollback_policy"
+require_contains MAINTENANCE.md "$rollback_policy"
+
+validation_commands=(
+  "python3 tests/test-prompt-contract.py"
+  "bash tests/test-run-ledger.sh"
+  "bash tests/test-ledger-recovery.sh"
+  "bash tests/test-followup-protocol.sh"
+  "bash tests/test-release-metadata.sh"
+  "python3 -m py_compile scripts/run-ledger tests/test-prompt-contract.py"
+  "bash -n tests/test-run-ledger.sh"
+  "bash -n tests/test-ledger-recovery.sh"
+  "bash -n tests/test-followup-protocol.sh"
+  "bash -n tests/test-release-metadata.sh"
+  "git diff --check"
+)
+for command in "${validation_commands[@]}"; do
+  require_contains README.md "$command"
+  require_contains MAINTENANCE.md "$command"
+done
 
 if grep -Fq "Exactly six workers are required for a valid skill round." "$REPO_ROOT/MAINTENANCE.md"; then
   echo "MAINTENANCE.md must distinguish adaptive follow-up batch size" >&2

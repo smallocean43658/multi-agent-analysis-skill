@@ -136,6 +136,17 @@ if state.get("version") != 1:
     raise SystemExit("portfolio compatibility must not change state schema version")
 PY
 "$LEDGER" prepare-round --run-dir "$new_review_run" --round 1 --assignments "$b_six" >/dev/null
+python3 - "$new_review_run/round-01.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+round_doc = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+if round_doc.get("review_portfolio_version") != "decision-chain-b1-b6-v1":
+    raise SystemExit("new B review Round 1 must persist its canonical portfolio identity")
+if round_doc.get("version") != 1:
+    raise SystemExit("canonical portfolio identity must not change round schema version")
+PY
 
 new_review_a_run="$("$LEDGER" init \
   --root "$tmpdir/.superpowers/new-review-a-slots" \
