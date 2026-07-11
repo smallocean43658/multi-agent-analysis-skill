@@ -33,6 +33,13 @@ This file is for maintainers. Keep user-facing explanation in `README.md` and ru
 
 - New review-run decision-chain version: `decision-chain-b1-b6-v1`.
 - Public review contract: B1-B6 with the documented engineering overlay.
+- Live release acceptance completed with six fresh B1-B6 workers: all six
+  dispatches spawned, returned completed results, and closed normally with no
+  failed, unknown, or open lifecycle. Round 1 finalized with objective
+  alignment, and a fresh C1 assignment prepared from a completed B1 source
+  preserved canonical target provenance without carrying Round 1 overlay
+  fields. The operational run ledger remains local under the ignored
+  `.superpowers/` directory.
 - `adaptive-backlog-v1` decision: new follow-up batches use 1-6 fresh workers and retain pending targets in the backlog.
 - Fresh-only activation decision: every follow-up worker is newly activated; worker reuse is not implemented.
 - Canonical-round reconciliation decision: round JSON is canonical and projections reconcile deterministically.
