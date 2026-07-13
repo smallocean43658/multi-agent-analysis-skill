@@ -51,7 +51,7 @@ Required `state.json.tooling` shape:
 
 Every run must create a local record before the first dispatch:
 
-- Root: `.superpowers/multi-agent-analysis/`
+- Root: `multi-agent-analysis/`
 - Run directory format: `YYYY-MM-DD-HHMM-<mode>-<slug>-<uuid6>/`
 - Required files at initialization: `brief.md`, `ledger.md`, `state.json`
 - Required round files: `round-N.json` and `round-N.md` where `N` is the round number rendered by the helper as `round-01.json`, `round-01.md`, and so on.
@@ -64,7 +64,7 @@ Resolve helper paths relative to this `SKILL.md` file. Use the bundled helper wh
 
 ```bash
 scripts/run-ledger init \
-  --root .superpowers/multi-agent-analysis \
+  --root multi-agent-analysis \
   --mode review \
   --target docs/plan.md \
   --objective "Decide whether the plan is ready" \
@@ -172,7 +172,7 @@ Create the assignment file yourself, then validate it with the helper:
 
 ```bash
 scripts/run-ledger prepare-round \
-  --run-dir .superpowers/multi-agent-analysis/2026-07-03-1200-review-plan-b1b2c3 \
+  --run-dir multi-agent-analysis/2026-07-03-1200-review-plan-b1b2c3 \
   --round 1 \
   --assignments /tmp/round-01-assignments.json
 ```
@@ -181,7 +181,7 @@ For every Round 3 or later batch, ask the user first. One explicit approval auth
 
 ```bash
 scripts/run-ledger prepare-round \
-  --run-dir .superpowers/multi-agent-analysis/<run-id> \
+  --run-dir multi-agent-analysis/<run-id> \
   --round 3 \
   --assignments /tmp/round-03-assignments.json \
   --user-approved
@@ -215,26 +215,26 @@ Use the helper commands for live bookkeeping:
 
 ```bash
 scripts/run-ledger plan-dispatch \
-  --run-dir .superpowers/multi-agent-analysis/<run-id> \
+  --run-dir multi-agent-analysis/<run-id> \
   --round 1 \
   --slot B1
 
 scripts/run-ledger record-spawn \
-  --run-dir .superpowers/multi-agent-analysis/<run-id> \
+  --run-dir multi-agent-analysis/<run-id> \
   --round 1 \
   --slot B1 \
   --agent-id <agent-id> \
   --status spawned
 
 scripts/run-ledger record-result \
-  --run-dir .superpowers/multi-agent-analysis/<run-id> \
+  --run-dir multi-agent-analysis/<run-id> \
   --round 1 \
   --slot B1 \
   --status completed \
   --summary "Short factual result summary"
 
 scripts/run-ledger record-close \
-  --run-dir .superpowers/multi-agent-analysis/<run-id> \
+  --run-dir multi-agent-analysis/<run-id> \
   --round 1 \
   --slot B1 \
   --status closed
@@ -250,7 +250,7 @@ When resuming an interrupted run, start with:
 
 ```bash
 scripts/run-ledger status \
-  --run-dir .superpowers/multi-agent-analysis/<run-id>
+  --run-dir multi-agent-analysis/<run-id>
 ```
 
 `status` takes the run lock and reconciles `state.json`, every `round-N.md`, and `ledger.md` from canonical round JSON before it prints a snapshot. Trust the reconciled output and latest `round-N.json` over conversation memory. Resolve every `planned` dispatch to the known spawn result or explicitly to `unknown`, then continue only missing lifecycle actions. Never retry or replace an unknown dispatch.
@@ -290,7 +290,7 @@ Record the synthesis with a JSON object, then let the helper render `round-N.md`
 
 ```bash
 scripts/run-ledger record-synthesis \
-  --run-dir .superpowers/multi-agent-analysis/<run-id> \
+  --run-dir multi-agent-analysis/<run-id> \
   --round 1 \
   --synthesis /tmp/round-01-synthesis.json
 ```
@@ -299,7 +299,7 @@ After the synthesis is written, mark the round decision:
 
 ```bash
 scripts/run-ledger finalize-round \
-  --run-dir .superpowers/multi-agent-analysis/<run-id> \
+  --run-dir multi-agent-analysis/<run-id> \
   --round 1 \
   --decision stop \
   --summary "Actionable recommendation exists; no decision-critical disagreement remains."
@@ -311,7 +311,7 @@ If a worker lifecycle cannot produce its `expected_agents` completed results plu
 
 ```bash
 scripts/run-ledger finalize-round \
-  --run-dir .superpowers/multi-agent-analysis/<run-id> \
+  --run-dir multi-agent-analysis/<run-id> \
   --round 1 \
   --decision stop \
   --summary "Worker dispatch failed; user input is required before restarting analysis." \

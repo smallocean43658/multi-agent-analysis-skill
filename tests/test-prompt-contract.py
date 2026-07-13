@@ -267,6 +267,10 @@ def assert_prompt_contracts(prompts: list[dict[str, object]]) -> None:
 
 def assert_skill_mentions_smoke_test() -> None:
     skill_text = SKILL_PATH.read_text(encoding="utf-8")
+    if "Root: `multi-agent-analysis/`" not in skill_text:
+        fail("SKILL.md must use multi-agent-analysis/ as the local run-record root")
+    if ".superpowers/multi-agent-analysis" in skill_text:
+        fail("SKILL.md must not use the legacy .superpowers parent for new run records")
     required_skill_terms = [
         "explicit multi-agent",
         "target-adaptive",

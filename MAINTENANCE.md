@@ -6,7 +6,7 @@ This file is for maintainers. Keep user-facing explanation in `README.md` and ru
 
 - Repository: `https://github.com/smallocean43658/multi-agent-analysis-skill.git`
 - Main branch: `main`
-- Local run records: `.superpowers/` and `.darwin/`, ignored by git
+- Local run records: `multi-agent-analysis/` and `.darwin/`, ignored by git
 
 ## Compatibility
 
@@ -26,8 +26,18 @@ This file is for maintainers. Keep user-facing explanation in `README.md` and ru
 - The main agent still owns judgment: whether to trigger, which active tools to use, how to synthesize, and whether another round is worth running.
 - Round 1 and legacy protocol rounds use six workers; adaptive follow-up batches use 1-6.
 - Historical A runs remain readable with the current helper. Once a B run is started, it requires a B-capable helper and must be completed or blocked before rolling code back.
+- Run-record storage is path-configurable. Changing the documented root does
+  not migrate existing records; pass an older run's path explicitly to
+  `--run-dir` when resuming it.
 
 ## Change Log
+
+### 2026-07-13
+
+- Changed the documented default local run-record root from the legacy nested
+  location to `multi-agent-analysis/`.
+- Preserved path-based access to existing records; no automatic migration or
+  deletion is performed.
 
 ### 2026-07-11
 
@@ -39,7 +49,7 @@ This file is for maintainers. Keep user-facing explanation in `README.md` and ru
   alignment, and a fresh C1 assignment prepared from a completed B1 source
   preserved canonical target provenance without carrying Round 1 overlay
   fields. The operational run ledger remains local under the ignored
-  `.superpowers/` directory.
+  `multi-agent-analysis/` directory.
 - `adaptive-backlog-v1` decision: new follow-up batches use 1-6 fresh workers and retain pending targets in the backlog.
 - Fresh-only activation decision: every follow-up worker is newly activated; worker reuse is not implemented.
 - Canonical-round reconciliation decision: round JSON is canonical and projections reconcile deterministically.
@@ -119,7 +129,8 @@ Before pushing to `main`:
 
 - Run the verification commands above.
 - Confirm `git status --short` contains only intentional tracked files.
-- Confirm `.superpowers/`, `.darwin/`, `__pycache__/`, and `*.pyc` are not staged.
+- Confirm `multi-agent-analysis/`, legacy `.superpowers/`, `.darwin/`,
+  `__pycache__/`, and `*.pyc` are not staged.
 - Confirm `LICENSE` still matches the intended restricted use/no-publishing policy.
 - Confirm `README.md` still explains installation and usage without becoming a maintenance log.
 - Confirm `SKILL.md` still describes the live runtime protocol.
@@ -129,5 +140,5 @@ Before pushing to `main`:
 
 - The helper can reject blank tool names, but it cannot prove a recorded tool name is callable in the current Codex session. The main agent must inspect the active tools list.
 - The smoke tests validate prompt contracts and ledger state transitions. They do not run real multi-agent tool calls.
-- Local run records under `.superpowers/` are intentionally not committed; they are operational evidence, not repository documentation.
+- Local run records under `multi-agent-analysis/` are intentionally not committed; they are operational evidence, not repository documentation.
 - The continuation gate is partly judgment-based. Tests protect caps and approval requirements, but they cannot fully validate synthesis quality.

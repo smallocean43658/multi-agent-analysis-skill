@@ -25,7 +25,7 @@ PY
   printf '%s\n' "$run_dir"
 }
 
-root="$tmpdir/.superpowers/multi-agent-analysis"
+root="$tmpdir/multi-agent-analysis"
 
 run_dir="$(init_legacy \
   --root "$root" \
@@ -79,7 +79,7 @@ for key in ["spawn", "wait", "close"]:
 PY
 
 if init_legacy \
-  --root "$tmpdir/.superpowers/bad-tooling" \
+  --root "$tmpdir/multi-agent-analysis/bad-tooling" \
   --mode review \
   --target docs/plan.md \
   --objective "Reject blank tool names" \
@@ -116,7 +116,7 @@ cat >"$b_six" <<'JSON'
 JSON
 
 new_review_run="$("$LEDGER" init \
-  --root "$tmpdir/.superpowers/new-review" \
+  --root "$tmpdir/multi-agent-analysis/new-review" \
   --mode review \
   --target docs/plan.md \
   --objective "Validate the B decision chain" \
@@ -149,7 +149,7 @@ if round_doc.get("version") != 1:
 PY
 
 new_review_a_run="$("$LEDGER" init \
-  --root "$tmpdir/.superpowers/new-review-a-slots" \
+  --root "$tmpdir/multi-agent-analysis/new-review-a-slots" \
   --mode review \
   --target docs/plan.md \
   --objective "Reject classic slots for a B review" \
@@ -173,7 +173,7 @@ assignments[1]["lens"] = "Mechanism Review"
 Path(sys.argv[2]).write_text(json.dumps(assignments, indent=2) + "\n", encoding="utf-8")
 PY
 new_review_dimension_run="$("$LEDGER" init \
-  --root "$tmpdir/.superpowers/new-review-dimension" \
+  --root "$tmpdir/multi-agent-analysis/new-review-dimension" \
   --mode review \
   --target docs/plan.md \
   --objective "Reject an incorrect B dimension" \
@@ -187,7 +187,7 @@ if "$LEDGER" prepare-round --run-dir "$new_review_dimension_run" --round 1 --ass
 fi
 
 divergent_portfolio_run="$("$LEDGER" init \
-  --root "$tmpdir/.superpowers/divergent-no-review-portfolio" \
+  --root "$tmpdir/multi-agent-analysis/divergent-no-review-portfolio" \
   --mode divergent-analysis \
   --target docs/options.md \
   --objective "Keep divergent slots independent" \
@@ -296,7 +296,7 @@ PY
 }
 
 create_completed_cross_review_round() {
-  cross_root="$tmpdir/.superpowers/cross-review"
+  cross_root="$tmpdir/multi-agent-analysis/cross-review"
   cross_run="$(init_legacy \
     --root "$cross_root" \
     --mode review \
@@ -428,7 +428,7 @@ Path(sys.argv[2]).write_text(json.dumps(assignments, indent=2) + "\n", encoding=
 PY
 
 injected_run="$(init_legacy \
-  --root "$tmpdir/.superpowers/injected-lifecycle" \
+  --root "$tmpdir/multi-agent-analysis/injected-lifecycle" \
   --mode review \
   --target docs/plan.md \
   --objective "Reject injected assignment lifecycle state" \
@@ -472,7 +472,7 @@ for assignment in round_doc["assignments"]:
 PY
 
 invalid_status_run="$(init_legacy \
-  --root "$tmpdir/.superpowers/invalid-status" \
+  --root "$tmpdir/multi-agent-analysis/invalid-status" \
   --mode review \
   --target docs/plan.md \
   --objective "Reject invalid lifecycle statuses" \
@@ -530,7 +530,7 @@ if "$LEDGER" record-close \
 fi
 
 abnormal_run="$(init_legacy \
-  --root "$tmpdir/.superpowers/abnormal-close" \
+  --root "$tmpdir/multi-agent-analysis/abnormal-close" \
   --mode review \
   --target docs/plan.md \
   --objective "Allow abnormal close without a result" \
@@ -623,7 +623,7 @@ if "$LEDGER" finalize-round \
 fi
 
 blocked_run="$(init_legacy \
-  --root "$tmpdir/.superpowers/blocked" \
+  --root "$tmpdir/multi-agent-analysis/blocked" \
   --mode review \
   --target docs/plan.md \
   --objective "Test blocked lifecycle handling" \
@@ -754,7 +754,7 @@ if "$LEDGER" prepare-round \
 fi
 
 planned_run="$(init_legacy \
-  --root "$tmpdir/.superpowers/planned-dispatch" \
+  --root "$tmpdir/multi-agent-analysis/planned-dispatch" \
   --mode review \
   --target docs/plan.md \
   --objective "Record fresh dispatch intent before spawning" \
@@ -838,7 +838,7 @@ PY
 "$LEDGER" plan-dispatch --run-dir "$planned_run" --round 1 --slot A3 >/dev/null
 
 open_blocked_run="$(init_legacy \
-  --root "$tmpdir/.superpowers/open-blocked" \
+  --root "$tmpdir/multi-agent-analysis/open-blocked" \
   --mode review \
   --target docs/plan.md \
   --objective "Reject blocked finalization with open workers" \
@@ -876,7 +876,7 @@ if "$LEDGER" finalize-round \
 fi
 
 no_activity_blocked_run="$(init_legacy \
-  --root "$tmpdir/.superpowers/no-activity-blocked" \
+  --root "$tmpdir/multi-agent-analysis/no-activity-blocked" \
   --mode review \
   --target docs/plan.md \
   --objective "Reject fabricated blocked rounds" \
@@ -901,7 +901,7 @@ if "$LEDGER" finalize-round \
 fi
 
 failed_result_run="$(init_legacy \
-  --root "$tmpdir/.superpowers/failed-result" \
+  --root "$tmpdir/multi-agent-analysis/failed-result" \
   --mode review \
   --target docs/plan.md \
   --objective "Do not count failed results as usable" \
@@ -1048,7 +1048,7 @@ Path(sys.argv[2]).write_text(json.dumps(assignments, indent=2) + "\n", encoding=
 PY
 
 duplicate_run="$(init_legacy \
-  --root "$tmpdir/.superpowers/duplicate" \
+  --root "$tmpdir/multi-agent-analysis/duplicate" \
   --mode review \
   --target docs/plan.md \
   --objective "Test duplicate slots" \
@@ -1244,7 +1244,7 @@ fi
   --assignments "$round3" \
   --user-approved >/dev/null
 
-divergent_root="$tmpdir/.superpowers/divergent"
+divergent_root="$tmpdir/multi-agent-analysis/divergent"
 divergent_run="$("$LEDGER" init \
   --root "$divergent_root" \
   --mode divergent-analysis \
@@ -1711,7 +1711,7 @@ json.dump(payload, open(dst, "w", encoding="utf-8"), indent=2)
 PY
 
 duplicate_run="$(init_legacy \
-  --root "$tmpdir/.superpowers/duplicate-lens" \
+  --root "$tmpdir/multi-agent-analysis/duplicate-lens" \
   --mode divergent-analysis \
   --target docs/plan.md \
   --objective "Reject duplicated lenses" \
@@ -1726,7 +1726,7 @@ if "$LEDGER" prepare-round --run-dir "$duplicate_run" --round 1 --assignments "$
 fi
 
 if init_legacy \
-  --root "$tmpdir/.superpowers/blank-objective" \
+  --root "$tmpdir/multi-agent-analysis/blank-objective" \
   --mode review \
   --target docs/plan.md \
   --objective "   " \
@@ -1740,7 +1740,7 @@ fi
 
 create_completed_objective_round() {
   objective_run="$(init_legacy \
-    --root "$tmpdir/.superpowers/objective-alignment" \
+    --root "$tmpdir/multi-agent-analysis/objective-alignment" \
     --mode review \
     --target docs/plan.md \
     --objective "Decide whether the implementation plan is ready" \
@@ -1913,7 +1913,7 @@ write_objective_synthesis "$weak_rationale" "aligned" "Fine." '[]' "stop"
 "$LEDGER" finalize-round --run-dir "$objective_run" --round 1 --decision stop --summary "Structural validation accepts weak rationale." >/dev/null
 
 engineering_review_run="$("$LEDGER" init \
-  --root "$tmpdir/.superpowers/engineering-review" \
+  --root "$tmpdir/multi-agent-analysis/engineering-review" \
   --mode review \
   --target docs/plan.md \
   --target-overlay engineering \
@@ -1956,7 +1956,7 @@ PY
 "$LEDGER" prepare-round --run-dir "$engineering_review_run" --round 1 --assignments "$engineering_review_assignments" >/dev/null
 
 legacy_engineering_run="$(init_legacy \
-  --root "$tmpdir/.superpowers/legacy-engineering-review" \
+  --root "$tmpdir/multi-agent-analysis/legacy-engineering-review" \
   --mode review \
   --target docs/plan.md \
   --target-overlay engineering \
@@ -1998,7 +1998,7 @@ Path(sys.argv[2]).write_text(json.dumps(assignments, indent=2) + "\n", encoding=
 PY
 
 engineering_invalid_run="$("$LEDGER" init \
-  --root "$tmpdir/.superpowers/engineering-invalid" \
+  --root "$tmpdir/multi-agent-analysis/engineering-invalid" \
   --mode review \
   --target docs/plan.md \
   --target-overlay engineering \
@@ -2013,7 +2013,7 @@ if "$LEDGER" prepare-round --run-dir "$engineering_invalid_run" --round 1 --assi
 fi
 
 divergent_engineering_run="$("$LEDGER" init \
-  --root "$tmpdir/.superpowers/divergent-engineering" \
+  --root "$tmpdir/multi-agent-analysis/divergent-engineering" \
   --mode divergent-analysis \
   --target docs/architecture.md \
   --target-overlay engineering \
@@ -2056,7 +2056,7 @@ Path(sys.argv[2]).write_text(json.dumps(assignments, indent=2) + "\n", encoding=
 PY
 
 divergent_wrong_slot_run="$("$LEDGER" init \
-  --root "$tmpdir/.superpowers/divergent-wrong-slots" \
+  --root "$tmpdir/multi-agent-analysis/divergent-wrong-slots" \
   --mode divergent-analysis \
   --target docs/architecture.md \
   --target-overlay engineering \
@@ -2083,7 +2083,7 @@ Path(sys.argv[2]).write_text(json.dumps(assignments, indent=2) + "\n", encoding=
 PY
 
 divergent_invalid_run="$("$LEDGER" init \
-  --root "$tmpdir/.superpowers/divergent-invalid" \
+  --root "$tmpdir/multi-agent-analysis/divergent-invalid" \
   --mode divergent-analysis \
   --target docs/architecture.md \
   --target-overlay engineering \
@@ -2098,7 +2098,7 @@ if "$LEDGER" prepare-round --run-dir "$divergent_invalid_run" --round 1 --assign
 fi
 
 non_engineering_overlay_run="$("$LEDGER" init \
-  --root "$tmpdir/.superpowers/no-overlay" \
+  --root "$tmpdir/multi-agent-analysis/no-overlay" \
   --mode divergent-analysis \
   --target docs/market.md \
   --objective "Explore market options" \

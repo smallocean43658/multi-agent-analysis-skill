@@ -58,7 +58,7 @@ New runs use the `adaptive-backlog-v1` protocol. New follow-up rounds use 1-6 fr
 Every run creates a local record under:
 
 ```text
-.superpowers/multi-agent-analysis/
+multi-agent-analysis/
 ```
 
 Run directories use this format:
@@ -76,6 +76,10 @@ Each run contains:
 - `round-N.md`: rendered human-readable round record.
 
 Local run records are intentionally ignored by git.
+
+Changing the configured storage root does not change the record format.
+Existing runs created under an earlier root remain readable when their path is
+passed explicitly with `--run-dir`; they are not moved automatically.
 
 ## Install
 

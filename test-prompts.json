@@ -18,7 +18,7 @@
         "same-target-boundary"
       ]
     },
-    "expected": "The agent loads orchestrating-multi-agent-analysis, selects review mode, creates a run record under .superpowers/multi-agent-analysis/, prepares exactly six first-round review lenses, dispatches six subagents, waits for all usable results, closes finished subagents, writes synthesis, and stops unless the continuation gate justifies another round."
+    "expected": "The agent loads orchestrating-multi-agent-analysis, selects review mode, creates a run record under multi-agent-analysis/, prepares exactly six first-round review lenses, dispatches six subagents, waits for all usable results, closes finished subagents, writes synthesis, and stops unless the continuation gate justifies another round."
   },
   {
     "id": 2,

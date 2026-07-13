@@ -45,6 +45,14 @@ require_contains README.md "B1-B6"
 require_contains MAINTENANCE.md "decision-chain-b1-b6-v1"
 require_contains README.md 'fixed B1-B6 dimensions for `review`'
 require_contains README.md 'target-adaptive D1-D6 lenses for `divergent-analysis`'
+require_contains README.md 'multi-agent-analysis/'
+require_contains SKILL.md 'Root: `multi-agent-analysis/`'
+require_contains MAINTENANCE.md 'Local run records: `multi-agent-analysis/`'
+require_contains .gitignore 'multi-agent-analysis/'
+
+for path in README.md SKILL.md MAINTENANCE.md test-prompts.json; do
+  require_absent "$path" ".superpowers/multi-agent-analysis"
+done
 
 require_contains README.md "Cross-Review Gate"
 require_contains MAINTENANCE.md "target_id"
@@ -82,7 +90,7 @@ if grep -Eq "Local install (path|type):" "$REPO_ROOT/MAINTENANCE.md"; then
   exit 1
 fi
 
-forbidden_tracked="$(git -C "$REPO_ROOT" ls-files | grep -E '(^|/)(\.superpowers|\.local-maintenance|\.darwin|__pycache__)(/|$)|\.pyc$' || true)"
+forbidden_tracked="$(git -C "$REPO_ROOT" ls-files | grep -E '(^|/)(multi-agent-analysis|\.superpowers|\.local-maintenance|\.darwin|__pycache__)(/|$)|\.pyc$' || true)"
 if [[ -n "$forbidden_tracked" ]]; then
   echo "tracked operational or private files are forbidden:" >&2
   echo "$forbidden_tracked" >&2

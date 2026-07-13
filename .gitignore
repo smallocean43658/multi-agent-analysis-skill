@@ -1,5 +1,6 @@
 .darwin/
 .superpowers/
+multi-agent-analysis/
 .local-maintenance/
 __pycache__/
 *.pyc
